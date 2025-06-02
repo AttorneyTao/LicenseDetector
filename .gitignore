@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+output*
+*.log
+·$*
+*.xlsx
+examples/
+bfg-1.15.0.jar
+.env
+*.csv
