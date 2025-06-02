@@ -1,10 +1,46 @@
-# Python-generated files
+# Environment variables
+.env
+
+# Python
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 wheels/
-*.egg-info
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Output files
+output.xlsx
+*.xlsx
 
 # Virtual environments
 .venv
@@ -12,8 +48,8 @@ wheels/
 output*
 *.log
 ·$*
-*.xlsx
-examples/
-bfg-1.15.0.jar
-.env
 *.csv
+
+bfg-1.15.0.jar
+
+examples/

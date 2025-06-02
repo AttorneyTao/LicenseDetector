@@ -15,16 +15,45 @@ from rapidfuzz import process, fuzz
 from tqdm import tqdm
 import google.generativeai as genai
 
+SCORE_THRESHOLD = 65
+
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('github_license_analyzer.log'),
+        logging.FileHandler('github_license_analyzer.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Configure URL construction logging
+url_logger = logging.getLogger('url_construction')
+url_logger.setLevel(logging.INFO)
+url_handler = logging.FileHandler('url_construction.log', encoding='utf-8')
+url_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+url_logger.addHandler(url_handler)
+
+# Configure LLM logging
+llm_logger = logging.getLogger('llm_interaction')
+llm_logger.setLevel(logging.INFO)
+llm_handler = logging.FileHandler('llm_interaction.log', encoding='utf-8')
+llm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+llm_logger.addHandler(llm_handler)
+
+# Add substep logging
+substep_logger = logging.getLogger('substep')
+substep_logger.setLevel(logging.INFO)
+substep_handler = logging.FileHandler('substep.log', encoding='utf-8')
+substep_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+substep_logger.addHandler(substep_handler)
+
+# Set the default encoding for stdout and stderr to utf-8
+import sys
+import codecs
+sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
 # Load environment variables
 load_dotenv()
@@ -105,8 +134,37 @@ class GitHubAPI:
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28"
         }
-        self.session = requests.Session()
+        
+        # Configure proxy settings
+        proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
+        if proxy:
+            logger.info(f"Using proxy: {proxy}")
+            self.session = requests.Session()
+            self.session.proxies = {
+                "http": proxy,
+                "https": proxy
+            }
+        else:
+            logger.info("No proxy configured")
+            self.session = requests.Session()
+            
         self.session.headers.update(self.headers)
+        
+        # Test connection
+        try:
+            logger.info("Testing GitHub API connection...")
+            self._make_request("/rate_limit")
+            logger.info("GitHub API connection successful")
+        except requests.exceptions.ProxyError as e:
+            logger.error(f"Proxy connection failed: {str(e)}")
+            logger.info("Retrying without proxy...")
+            # Retry without proxy
+            self.session.proxies = {}
+            self._make_request("/rate_limit")
+            logger.info("GitHub API connection successful without proxy")
+        except Exception as e:
+            logger.error(f"Failed to connect to GitHub API: {str(e)}")
+            raise
 
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """Make a request to GitHub API with rate limit handling."""
@@ -249,7 +307,7 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
         version_str,
         candidates.keys(),
         scorer=fuzz.token_sort_ratio,
-        score_cutoff=60
+        score_cutoff=SCORE_THRESHOLD  # Increased minimum score threshold
     )
     
     if not best_match:
@@ -258,7 +316,7 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
             version_str,
             candidates.keys(),
             scorer=fuzz.partial_ratio,
-            score_cutoff=60
+            score_cutoff= SCORE_THRESHOLD  # Increased minimum score threshold
         )
     
     if not best_match:
@@ -268,6 +326,11 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
     # process.extractOne returns (matched_string, score, index)
     matched_version, score, _ = best_match
     logger.info(f"Best match: {matched_version} (score: {score})")
+    
+    # If score is too low, use default branch
+    if score < SCORE_THRESHOLD:  # Increased minimum score threshold
+        logger.warning(f"Best match score {score} is too low, using default branch")
+        return default_branch, True
     
     # Check if the requested version falls within any version range
     def is_version_in_range(version_str: str, range_str: str) -> bool:
@@ -324,28 +387,44 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
 def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
     """Find license files in the path map."""
     logger.info(f"Searching for license files in {sub_path or 'root'} with keywords: {keywords}")
+    url_logger.info(f"Starting license file search in {sub_path or 'root'}")
+    url_logger.info(f"Search keywords: {keywords}")
     results = []
     base_path = sub_path.rstrip("/")
     
     # Ensure path_map is a dictionary and has a tree key
     if not isinstance(path_map, dict) or "tree" not in path_map:
         logger.warning(f"Invalid path map format: {path_map}")
+        url_logger.error(f"Invalid path map format: {path_map}")
         return results
     
     # Ensure tree is a list
     tree_items = path_map.get("tree", [])
     if not isinstance(tree_items, list):
         logger.warning(f"Tree is not a list: {tree_items}")
+        url_logger.error(f"Tree is not a list: {tree_items}")
         return results
     
     # Get the resolved version from the path_map
-    resolved_version = path_map.get("resolved_version", "main")  # Changed from "sha" to "resolved_version"
+    resolved_version = path_map.get("resolved_version", "main")
     logger.info(f"Using resolved version for URL construction: {resolved_version}")
+    url_logger.info(f"Using resolved version: {resolved_version}")
+    
+    url_logger.info(f"Processing {len(tree_items)} tree items")
+    
+    # Log all paths for debugging
+    url_logger.info("All paths in tree:")
+    for item in tree_items:
+        if isinstance(item, dict):
+            path = item.get("path", "")
+            type_ = item.get("type", "")
+            url_logger.info(f"Path: {path}, Type: {type_}")
     
     for item in tree_items:
         # Ensure item is a dictionary
         if not isinstance(item, dict):
             logger.warning(f"Invalid tree item format: {item}")
+            url_logger.error(f"Invalid tree item format: {item}")
             continue
             
         if item.get("type") != "blob":
@@ -356,31 +435,63 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
             continue
             
         if base_path and not path.startswith(base_path):
+            url_logger.debug(f"Skipping path {path} - not in base path {base_path}")
             continue
             
         name = path.lower().split("/")[-1]
+        url_logger.debug(f"Checking file: {name}")
+        
         if any(keyword in name for keyword in keywords):
             logger.debug(f"Found license file: {path}")
+            url_logger.info(f"Found license file: {path}")
+            url_logger.info(f"Matching keyword found in: {name}")
+            
             # Convert GitHub API URL to GitHub web interface URL
             api_url = item.get("url", "")
             if api_url:
-                # Extract owner, repo, and path from the API URL
-                # Example API URL: https://api.github.com/repos/owner/repo/git/blobs/01c82a159046ea6337d3fe1bc771c03b874d166b
-                # Convert to: https://github.com/owner/repo/blob/branch/path
                 try:
+                    url_logger.info("Processing API URL: " + api_url)
+                    
                     # Get the repository info from the API URL
+                    if "/repos/" not in api_url:
+                        url_logger.error(f"Invalid API URL format (no /repos/): {api_url}")
+                        continue
+                        
                     repo_parts = api_url.split("/repos/")[1].split("/")
+                    if len(repo_parts) < 2:
+                        url_logger.error(f"Invalid API URL format (insufficient parts): {api_url}")
+                        continue
+                        
                     owner = repo_parts[0]
                     repo = repo_parts[1]
                     
-                    # Construct the GitHub web interface URL using the resolved version
-                    web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                    # Get just the filename from the path
+                    filename = path.split("/")[-1]
+                    
+                    # Log URL construction components
+                    url_logger.info("URL Construction Components:")
+                    url_logger.info(f"Original path: {path}")
+                    url_logger.info(f"API URL: {api_url}")
+                    url_logger.info(f"Owner: {owner}")
+                    url_logger.info(f"Repo: {repo}")
+                    url_logger.info(f"Resolved version: {resolved_version}")
+                    url_logger.info(f"Filename: {filename}")
+                    
+                    # Construct the GitHub web interface URL
+                    web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{filename}"
+                    url_logger.info(f"Constructed URL: {web_url}")
+                    
                     results.append(web_url)
                     logger.debug(f"Converted API URL to web URL: {web_url}")
                 except Exception as e:
-                    logger.warning(f"Failed to convert API URL to web URL: {str(e)}")
+                    error_msg = f"Failed to convert API URL to web URL: {str(e)}"
+                    logger.warning(error_msg)
+                    url_logger.error(error_msg)
+                    url_logger.error(f"API URL that caused error: {api_url}")
                     results.append(api_url)  # Fallback to original URL if conversion fails
     
+    url_logger.info(f"Found {len(results)} license files")
+    url_logger.info(f"Final results: {results}")
     logger.info(f"Found {len(results)} license files")
     return results
 
@@ -500,52 +611,29 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
     try:
         prompt = GEMINI_CONFIG["prompts"]["license_analysis"].format(content=content)
         
-        logger.info("Making request to Gemini API:")
-        logger.info(f"Model: {GEMINI_CONFIG['model']}")
-        logger.info(f"Prompt: {prompt}")
-        
         # Generate content using the official client
         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
         response = model.generate_content(prompt)
         
-        logger.info(f"Raw API Response: {response}")
-        
+        # Parse the response text into a dictionary
         if response.text:
-            logger.info(f"Extracted text response: {response.text}")
-            
-            # Extract JSON from the response text
             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
             if json_match:
-                analysis = json.loads(json_match.group())
-                logger.info(f"Parsed license analysis result: {json.dumps(analysis, indent=2)}")
-                
-                # Convert the new format to the expected format
-                licenses = analysis["main_licenses"]
-                if analysis.get("has_third_party_licenses"):
-                    licenses.append("third-party")
-                
-                return {
-                    "licenses": licenses,
-                    "is_dual_licensed": analysis["is_dual_licensed"],
-                    "dual_license_relationship": analysis.get("dual_license_relationship", "none"),
-                    "license_relationship": analysis["license_relationship"],
-                    "confidence": analysis["confidence"],
-                    "third_party_license_location": analysis.get("third_party_license_location")
-                }
+                result = json.loads(json_match.group())
+                # Convert main_licenses to licenses for consistency
+                if "main_licenses" in result:
+                    result["licenses"] = result.pop("main_licenses")
+                return result
             else:
-                logger.warning("No JSON found in the response text")
-        else:
-            logger.warning("No text in the API response")
-        
-        logger.warning("No valid analysis found in Gemini API response")
-        return {
-            "licenses": [],
-            "is_dual_licensed": False,
-            "dual_license_relationship": "none",
-            "license_relationship": "none",
-            "confidence": 0.0,
-            "third_party_license_location": None
-        }
+                logger.warning("No JSON found in license analysis response")
+                return {
+                    "licenses": [],
+                    "is_dual_licensed": False,
+                    "dual_license_relationship": "none",
+                    "license_relationship": "none",
+                    "confidence": 0.0,
+                    "third_party_license_location": None
+                }
     except Exception as e:
         logger.error(f"Failed to analyze license content: {str(e)}", exc_info=True)
         return {
@@ -592,34 +680,74 @@ def extract_copyright_info(content: str) -> Optional[str]:
         }}
         """
         
+        llm_logger.info("Copyright Extraction Request:")
+        llm_logger.info(f"Prompt: {prompt.format(content=content)}")
+        
         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
         response = model.generate_content(prompt.format(content=content))
+        
+        llm_logger.info("Copyright Extraction Response:")
+        llm_logger.info(f"Response: {response.text}")
         
         if response.text:
             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
-                return result.get("copyright_notice")
+                copyright_notice = result.get("copyright_notice")
+                llm_logger.info(f"Extracted copyright notice: {copyright_notice}")
+                return copyright_notice
+            else:
+                llm_logger.warning("No JSON found in copyright extraction response")
     except Exception as e:
-        logger.warning(f"Failed to extract copyright info: {str(e)}")
+        llm_logger.error(f"Failed to extract copyright info: {str(e)}", exc_info=True)
     return None
 
 def construct_copyright_notice(api: GitHubAPI, owner: str, repo: str, ref: str, component_name: str, readme_content: Optional[str] = None, license_content: Optional[str] = None) -> str:
     """Construct a copyright notice if one is not found."""
     # Try to extract copyright from content first
-    if readme_content:
-        copyright_notice = extract_copyright_info(readme_content)
-        if copyright_notice:
-            return copyright_notice
-            
-    if license_content:
-        copyright_notice = extract_copyright_info(license_content)
-        if copyright_notice:
-            return copyright_notice
+    copyright_notice = None
     
-    # If no copyright found, construct one
-    year = get_last_update_time(api, owner, repo, ref)
-    return f"Copyright (c) {year} {component_name} original author and authors"
+    # Combine README and license content for analysis
+    combined_content = ""
+    if readme_content:
+        combined_content += readme_content + "\n\n"
+    if license_content:
+        combined_content += license_content
+    
+    if combined_content:
+        # Use LLM to analyze copyright information
+        try:
+            prompt = f"""Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
+
+Text to analyze:
+{combined_content}"""
+            
+            llm_logger.info("Copyright Notice Construction Request:")
+            llm_logger.info(f"Prompt: {prompt}")
+            
+            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+            response = model.generate_content(prompt)
+            
+            llm_logger.info("Copyright Notice Construction Response:")
+            llm_logger.info(f"Response: {response.text}")
+            
+            if response.text:
+                text = response.text.strip()
+                if text and text.lower() != "none":
+                    copyright_notice = text
+                    llm_logger.info(f"Found copyright notice via LLM: {copyright_notice}")
+                else:
+                    llm_logger.info("No copyright notice found in LLM response")
+        except Exception as e:
+            llm_logger.error(f"Error using LLM for copyright analysis: {str(e)}", exc_info=True)
+    
+    # If no copyright found via LLM, construct one
+    if not copyright_notice:
+        year = get_last_update_time(api, owner, repo, ref)
+        copyright_notice = f"Copyright (c) {year} {component_name} original author and authors"
+        llm_logger.info(f"Constructed default copyright notice: {copyright_notice}")
+    
+    return copyright_notice
 
 def find_github_url_from_package_url(package_url: str) -> Optional[str]:
     """Use LLM to find GitHub URL from a package URL (e.g., Maven, NPM)."""
@@ -642,8 +770,14 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
         If you are not sure, return null.
         """
         
+        llm_logger.info("GitHub URL Lookup Request:")
+        llm_logger.info(f"Prompt: {prompt}")
+        
         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
         response = model.generate_content(prompt)
+        
+        llm_logger.info("GitHub URL Lookup Response:")
+        llm_logger.info(f"Response: {response.text}")
         
         if response.text:
             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
@@ -652,13 +786,16 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
                 github_url = result.get("github_url")
                 confidence = result.get("confidence", 0.0)
                 
+                llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
+                
                 if github_url and confidence >= 0.7:  # Only accept if confidence is high enough
-                    logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
                     return github_url
                 else:
-                    logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
+                    llm_logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
+            else:
+                llm_logger.warning("No JSON found in GitHub URL lookup response")
     except Exception as e:
-        logger.warning(f"Failed to find GitHub URL: {str(e)}")
+        llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
     return None
 
 def process_repository(
@@ -668,18 +805,19 @@ def process_repository(
     license_keywords: List[str] = ["license", "licenses", "copying", "notice"]
 ) -> Dict[str, Any]:
     """Process a single repository and return license information."""
-    logger.info(f"Processing repository: {github_url} (version: {version})")
+    substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
     try:
         # Store original input URL
         input_url = github_url
         
-        # Check if the URL is a GitHub URL
+        # Step 1: Check if the URL is a GitHub URL
+        substep_logger.info("Step 1/15: Checking if URL is a GitHub URL")
         parsed = urlparse(github_url)
         if parsed.netloc != "github.com":
-            logger.info(f"Non-GitHub URL detected: {github_url}")
+            substep_logger.info(f"Non-GitHub URL detected: {github_url}")
             github_url = find_github_url_from_package_url(github_url)
             if not github_url:
-                logger.warning(f"Could not find GitHub URL for {github_url}")
+                substep_logger.warning(f"Could not find GitHub URL for {github_url}")
                 return {
                     "input_url": input_url,
                     "repo_url": github_url,
@@ -697,26 +835,89 @@ def process_repository(
                     "status": "skipped",
                     "license_determination_reason": "Not a GitHub repository and could not find corresponding GitHub URL"
                 }
-            logger.info(f"Found corresponding GitHub URL: {github_url}")
+            substep_logger.info(f"Found corresponding GitHub URL: {github_url}")
         
-        # Parse URL
+        # Step 2: Parse URL
+        substep_logger.info("Step 2/15: Parsing GitHub URL")
         repo_url, sub_path, kind = parse_github_url(github_url)
         owner, repo = repo_url.split("/")[-2:]
-        logger.debug(f"Parsed URL: owner={owner}, repo={repo}, kind={kind}, sub_path={sub_path}")
+        substep_logger.info(f"Parsed URL: owner={owner}, repo={repo}, kind={kind}, sub_path={sub_path}")
         
-        # Get repository info for component name
+        # Step 3: Get repository info
+        substep_logger.info("Step 3/15: Getting repository information")
         repo_info = api.get_repo_info(owner, repo)
         component_name = repo_info.get("name", repo)
-        logger.info(f"Retrieved component name: {component_name}")
+        substep_logger.info(f"Retrieved component name: {component_name}")
         
-        # Resolve version
+        # Step 4: Resolve version
+        substep_logger.info("Step 4/15: Resolving version")
         resolved_version, used_default_branch = resolve_version(api, owner, repo, version)
-        logger.info(f"Resolved version to: {resolved_version}, used_default_branch: {used_default_branch}")
+        substep_logger.info(f"Resolved version to: {resolved_version}, used_default_branch: {used_default_branch}")
+        
+        # Step 5: Try to get license directly from GitHub API
+        substep_logger.info("Step 5/15: Checking for license through GitHub API")
+        try:
+            license_info = api.get_license(owner, repo, ref=resolved_version)
+            if license_info:
+                substep_logger.info("Found license through GitHub API")
+                url_logger.info("Found license through GitHub API")
+                url_logger.info(f"License info: {json.dumps(license_info, indent=2)}")
+                
+                # Get license content and analyze it
+                license_content = license_info.get("content", "")
+                if license_content:
+                    substep_logger.info("Analyzing license content")
+                    license_file_analysis = analyze_license_content(license_content)
+                    
+                    # Use the html_url from _links if available
+                    license_url = license_info.get("_links", {}).get("html")
+                    if not license_url:
+                        # Fallback to constructing from download_url
+                        license_url = license_info.get("download_url", "")
+                        if license_url.startswith("https://raw.githubusercontent.com"):
+                            parts = license_url.replace("https://raw.githubusercontent.com/", "").split("/")
+                            if len(parts) >= 3:
+                                owner, repo, *path_parts = parts
+                                path = "/".join(path_parts)
+                                license_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                    
+                    url_logger.info(f"Using license URL: {license_url}")
+                    substep_logger.info("Step 5/15 completed successfully")
+                    
+                    return {
+                        "input_url": input_url,
+                        "repo_url": repo_url,
+                        "input_version": version,
+                        "resolved_version": resolved_version,
+                        "used_default_branch": used_default_branch,
+                        "component_name": component_name,
+                        "license_files": license_url,
+                        "license_analysis": license_file_analysis,
+                        "license_type": license_info.get("license", {}).get("spdx_id"),
+                        "has_license_conflict": False,
+                        "readme_license": None,
+                        "license_file_license": license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None,
+                        "copyright_notice": construct_copyright_notice(api, owner, repo, resolved_version, component_name, None, license_content),
+                        "status": "success",
+                        "license_determination_reason": "License found through GitHub API"
+                    }
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                substep_logger.warning(f"No license found through GitHub API for {owner}/{repo}")
+                url_logger.info(f"No license found through GitHub API for {owner}/{repo}")
+            else:
+                substep_logger.error(f"Error fetching license through GitHub API: {str(e)}")
+                url_logger.error(f"Error fetching license through GitHub API: {str(e)}")
+        
+        # Step 6: Search in repository tree
+        substep_logger.info("Step 6/15: Searching for license in repository tree")
+        url_logger.info("No license found through GitHub API, searching in tree")
         
         # Get tree using the resolved version
+        substep_logger.info("Getting repository tree")
         tree_response = api.get_tree(owner, repo, resolved_version)
         if not isinstance(tree_response, dict):
-            logger.error(f"Invalid tree response: {tree_response}")
+            substep_logger.error(f"Invalid tree response: {tree_response}")
             return {
                 "input_url": input_url,
                 "repo_url": repo_url,
@@ -731,7 +932,7 @@ def process_repository(
             
         tree = tree_response.get("tree", [])
         if not isinstance(tree, list):
-            logger.error(f"Invalid tree data: {tree}")
+            substep_logger.error(f"Invalid tree data: {tree}")
             return {
                 "input_url": input_url,
                 "repo_url": repo_url,
@@ -744,36 +945,41 @@ def process_repository(
                 "license_determination_reason": "Error: Invalid tree data"
             }
             
-        logger.debug(f"Retrieved tree with {len(tree)} items")
+        substep_logger.info(f"Retrieved tree with {len(tree)} items")
         
-        # Save tree structure to file
+        # Step 7: Save tree structure
+        substep_logger.info("Step 7/15: Saving tree structure")
         save_tree_to_file(repo_url, resolved_version, tree)
         
-        # First try to find README in subpath
+        # Step 8: Find and analyze README
+        substep_logger.info("Step 8/15: Looking for README file")
         readme_path = find_readme(tree, sub_path)
         if not readme_path:
-            # If no README in subpath, try repo root
+            substep_logger.info("No README found in subpath, checking repository root")
             readme_path = find_readme(tree)
         
         readme_content = None
         readme_license_analysis = None
         if readme_path:
-            logger.info(f"Found README at: {readme_path}")
+            substep_logger.info(f"Found README at: {readme_path}")
             readme_content = get_file_content(api, owner, repo, readme_path, resolved_version)
             if readme_content:
+                substep_logger.info("Analyzing README content for license information")
                 readme_license_analysis = analyze_license_content(readme_content)
                 if readme_license_analysis["licenses"]:
-                    logger.info(f"Found license information in README: {readme_license_analysis}")
+                    substep_logger.info(f"Found license information in README: {readme_license_analysis}")
         
-        # Search for license files
+        # Step 9: Search for license files
+        substep_logger.info("Step 9/15: Searching for license files")
         path_map = {
             "tree": tree,
             "resolved_version": resolved_version
         }
         license_files = find_license_files(path_map, sub_path, license_keywords)
-        logger.info(f"Found {len(license_files)} license files in subpath")
+        substep_logger.info(f"Found {len(license_files)} license files in subpath")
         
-        # Get license content for copyright analysis
+        # Step 10: Get license content for copyright analysis
+        substep_logger.info("Step 10/15: Getting license content for copyright analysis")
         license_content = None
         if license_files:
             for license_file in license_files:
@@ -781,22 +987,25 @@ def process_repository(
                 if license_content:
                     break
         
-        # Get copyright notice
+        # Step 11: Get copyright notice
+        substep_logger.info("Step 11/15: Constructing copyright notice")
         copyright_notice = construct_copyright_notice(
             api, owner, repo, resolved_version, component_name,
             readme_content, license_content
         )
-        logger.info(f"Copyright notice: {copyright_notice}")
+        substep_logger.info(f"Copyright notice: {copyright_notice}")
         
-        # If licenses found in subpath, analyze them
+        # Step 12: Analyze found licenses
+        substep_logger.info("Step 12/15: Analyzing found licenses")
         if license_files:
             license_paths = [url.split("/")[-1] for url in license_files]
             determination_reason = f"Found license files in {sub_path or 'root'}: {', '.join(license_paths)}"
-            logger.info(determination_reason)
+            substep_logger.info(determination_reason)
             
             # If no license info found in README, analyze license files
             license_file_analysis = None
             if not readme_license_analysis or not readme_license_analysis["licenses"]:
+                substep_logger.info("No license info in README, analyzing license files")
                 for license_file in license_files:
                     license_content = get_file_content(api, owner, repo, license_file.split("/")[-1], resolved_version)
                     if license_content:
@@ -811,11 +1020,29 @@ def process_repository(
                 file_licenses = set(license_file_analysis["licenses"])
                 if readme_licenses != file_licenses:
                     license_conflict = True
-                    logger.warning(f"License conflict detected between README ({readme_licenses}) and license file ({file_licenses})")
+                    substep_logger.warning(f"License conflict detected between README ({readme_licenses}) and license file ({file_licenses})")
             
             # Use license file analysis if available, otherwise use README analysis
             final_analysis = license_file_analysis or readme_license_analysis
             
+            # Convert raw GitHub URLs to web URLs
+            substep_logger.info("Converting license URLs to web URLs")
+            web_license_files = []
+            for license_file in license_files:
+                if license_file.startswith("https://raw.githubusercontent.com"):
+                    # Convert raw URL to web URL
+                    parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
+                    if len(parts) >= 3:
+                        owner, repo, *path_parts = parts
+                        path = "/".join(path_parts)
+                        web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                        web_license_files.append(web_url)
+                    else:
+                        web_license_files.append(license_file)
+                else:
+                    web_license_files.append(license_file)
+            
+            substep_logger.info("Step 12/15 completed successfully")
             return {
                 "input_url": input_url,
                 "repo_url": repo_url,
@@ -823,7 +1050,7 @@ def process_repository(
                 "resolved_version": resolved_version,
                 "used_default_branch": used_default_branch,
                 "component_name": component_name,
-                "license_files": "\n".join(license_files),
+                "license_files": "\n".join(web_license_files),
                 "license_analysis": final_analysis,
                 "license_type": final_analysis["licenses"][0] if final_analysis and final_analysis["licenses"] else None,
                 "has_license_conflict": license_conflict,
@@ -834,18 +1061,19 @@ def process_repository(
                 "license_determination_reason": determination_reason
             }
         
-        # If no licenses found, try repo-level license
-        logger.info("No license files found in subpath, trying repo-level license")
+        # Step 13: Try repo-level license
+        substep_logger.info("Step 13/15: Trying repo-level license")
         try:
             license_info = api.get_license(owner, repo, ref=resolved_version)
             if license_info:
                 license_type = license_info.get("license", {}).get("spdx_id")
                 determination_reason = f"License determined via GitHub API: {license_type}"
-                logger.info(determination_reason)
+                substep_logger.info(determination_reason)
                 
                 # If no license info found in README, analyze the license content
                 license_file_analysis = None
                 if not readme_license_analysis or not readme_license_analysis["licenses"]:
+                    substep_logger.info("Analyzing repo-level license content")
                     license_content = get_file_content(api, owner, repo, "LICENSE", resolved_version)
                     if license_content:
                         license_file_analysis = analyze_license_content(license_content)
@@ -857,11 +1085,22 @@ def process_repository(
                     file_licenses = set(license_file_analysis["licenses"])
                     if readme_licenses != file_licenses:
                         license_conflict = True
-                        logger.warning(f"License conflict detected between README ({readme_licenses}) and license file ({file_licenses})")
+                        substep_logger.warning(f"License conflict detected between README ({readme_licenses}) and license file ({file_licenses})")
                 
                 # Use license file analysis if available, otherwise use README analysis
                 final_analysis = license_file_analysis or readme_license_analysis
                 
+                # Convert raw GitHub URL to web URL
+                license_url = license_info["download_url"]
+                if license_url.startswith("https://raw.githubusercontent.com"):
+                    parts = license_url.replace("https://raw.githubusercontent.com/", "").split("/")
+                    if len(parts) >= 3:
+                        owner, repo, *path_parts = parts
+                        path = "/".join(path_parts)
+                        web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                        license_url = web_url
+                
+                substep_logger.info("Step 13/15 completed successfully")
                 return {
                     "input_url": input_url,
                     "repo_url": repo_url,
@@ -870,7 +1109,7 @@ def process_repository(
                     "used_default_branch": used_default_branch,
                     "component_name": component_name,
                     "license_type": license_type,
-                    "license_files": license_info["download_url"],
+                    "license_files": license_url,
                     "license_analysis": final_analysis,
                     "has_license_conflict": license_conflict,
                     "readme_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,
@@ -881,24 +1120,25 @@ def process_repository(
                 }
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
-                logger.warning(f"No license found for {owner}/{repo} at version {resolved_version}")
+                substep_logger.warning(f"No license found for {owner}/{repo} at version {resolved_version}")
             else:
-                logger.error(f"Error fetching license: {str(e)}")
+                substep_logger.error(f"Error fetching license: {str(e)}")
         
-        # If still no licenses, search entire repo
+        # Step 14: Search entire repo
+        substep_logger.info("Step 14/15: Searching entire repository for licenses")
         if not license_files:
-            logger.info("No repo-level license found, searching entire repository")
             license_files = find_license_files(path_map, "", license_keywords)
-            logger.info(f"Found {len(license_files)} license files in entire repository")
+            substep_logger.info(f"Found {len(license_files)} license files in entire repository")
             
             if license_files:
                 license_paths = [url.split("/")[-1] for url in license_files]
                 determination_reason = f"Found license files in repository root: {', '.join(license_paths)}"
-                logger.info(determination_reason)
+                substep_logger.info(determination_reason)
                 
                 # If no license info found in README, analyze license files
                 license_file_analysis = None
                 if not readme_license_analysis or not readme_license_analysis["licenses"]:
+                    substep_logger.info("Analyzing found license files")
                     for license_file in license_files:
                         license_content = get_file_content(api, owner, repo, license_file.split("/")[-1], resolved_version)
                         if license_content:
@@ -913,11 +1153,29 @@ def process_repository(
                     file_licenses = set(license_file_analysis["licenses"])
                     if readme_licenses != file_licenses:
                         license_conflict = True
-                        logger.warning(f"License conflict detected between README ({readme_licenses}) and license file ({file_licenses})")
+                        substep_logger.warning(f"License conflict detected between README ({readme_licenses}) and license file ({file_licenses})")
                 
                 # Use license file analysis if available, otherwise use README analysis
                 final_analysis = license_file_analysis or readme_license_analysis
                 
+                # Convert raw GitHub URLs to web URLs
+                substep_logger.info("Converting license URLs to web URLs")
+                web_license_files = []
+                for license_file in license_files:
+                    if license_file.startswith("https://raw.githubusercontent.com"):
+                        # Convert raw URL to web URL
+                        parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
+                        if len(parts) >= 3:
+                            owner, repo, *path_parts = parts
+                            path = "/".join(path_parts)
+                            web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                            web_license_files.append(web_url)
+                        else:
+                            web_license_files.append(license_file)
+                    else:
+                        web_license_files.append(license_file)
+                
+                substep_logger.info("Step 14/15 completed successfully")
                 return {
                     "input_url": input_url,
                     "repo_url": repo_url,
@@ -925,7 +1183,7 @@ def process_repository(
                     "resolved_version": resolved_version,
                     "used_default_branch": used_default_branch,
                     "component_name": component_name,
-                    "license_files": "\n".join(license_files),
+                    "license_files": "\n".join(web_license_files),
                     "license_analysis": final_analysis,
                     "license_type": final_analysis["licenses"][0] if final_analysis and final_analysis["licenses"] else None,
                     "has_license_conflict": license_conflict,
@@ -936,9 +1194,10 @@ def process_repository(
                     "license_determination_reason": determination_reason
                 }
         
-        # If no licenses found anywhere
+        # Step 15: No licenses found
+        substep_logger.info("Step 15/15: No licenses found in repository")
         determination_reason = "No license files found in repository"
-        logger.warning(determination_reason)
+        substep_logger.warning(determination_reason)
         return {
             "input_url": input_url,
             "repo_url": repo_url,
@@ -959,7 +1218,7 @@ def process_repository(
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Error processing repository {github_url}: {error_msg}", exc_info=True)
+        substep_logger.error(f"Error processing repository {github_url}: {error_msg}", exc_info=True)
         return {
             "input_url": input_url,
             "repo_url": github_url,
@@ -975,8 +1234,16 @@ def process_repository(
 def main():
     logger.info("Starting GitHub License Analyzer")
     
+    # Check environment variables
+    logger.info("Checking environment variables")
+    github_token = os.getenv("GITHUB_TOKEN")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    logger.info(f"GITHUB_TOKEN present: {'Yes' if github_token else 'No'}")
+    logger.info(f"GEMINI_API_KEY present: {'Yes' if gemini_api_key else 'No'}")
+    
     # Initialize GitHub API
     try:
+        logger.info("Step 1: Initializing GitHub API client")
         api = GitHubAPI()
         logger.info("GitHub API client initialized successfully")
     except Exception as e:
@@ -985,30 +1252,55 @@ def main():
     
     # Read input Excel file
     try:
-        logger.info("Reading input Excel file")
+        logger.info("Step 2: Reading input Excel file")
+        logger.info(f"Current working directory: {os.getcwd()}")
+        logger.info(f"Files in current directory: {os.listdir('.')}")
         df = pd.read_excel("input.xlsx")
         logger.info(f"Read {len(df)} rows from input file")
+        logger.info(f"Columns found: {df.columns.tolist()}")
+        logger.info(f"First row data: {df.iloc[0].to_dict()}")
     except Exception as e:
         logger.error(f"Failed to read input file: {str(e)}", exc_info=True)
         raise
     
     # Process each repository
     results = []
+    logger.info("Step 3: Starting repository processing")
     for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing repositories"):
-        logger.info(f"Processing row {idx + 1}/{len(df)}")
-        result = process_repository(
-            api,
-            row["github_url"],
-            row.get("version")
-        )
-        results.append(result)
+        logger.info(f"Starting processing of row {idx + 1}/{len(df)}")
+        logger.info(f"Processing URL: {row['github_url']}")
+        logger.info(f"Version: {row.get('version')}")
         
-        # Save intermediate results
         try:
-            pd.DataFrame(results).to_csv("temp_results.csv", index=False)
-            logger.debug("Saved intermediate results")
+            result = process_repository(
+                api,
+                row["github_url"],
+                row.get("version")
+            )
+            
+            # Extract additional license analysis fields
+            if result.get("license_analysis"):
+                result["is_dual_licensed"] = result["license_analysis"].get("is_dual_licensed", False)
+                result["dual_license_relationship"] = result["license_analysis"].get("dual_license_relationship", "none")
+                result["has_third_party_licenses"] = result["license_analysis"].get("has_third_party_licenses", False)
+                result["third_party_license_location"] = result["license_analysis"].get("third_party_license_location", None)
+            
+            results.append(result)
+            logger.info(f"Completed processing row {idx + 1}")
+            
+            # Save intermediate results
+            try:
+                pd.DataFrame(results).to_csv("temp_results.csv", index=False)
+                logger.debug("Saved intermediate results")
+            except Exception as e:
+                logger.error(f"Failed to save intermediate results: {str(e)}", exc_info=True)
         except Exception as e:
-            logger.error(f"Failed to save intermediate results: {str(e)}", exc_info=True)
+            logger.error(f"Error processing row {idx + 1}: {str(e)}", exc_info=True)
+            results.append({
+                "input_url": row["github_url"],
+                "error": str(e),
+                "status": "error"
+            })
     
     # Create final output
     try:
@@ -1019,7 +1311,9 @@ def main():
             "input_url", "repo_url", "input_version", "resolved_version", "used_default_branch",
             "component_name", "license_files", "license_analysis", "license_type",
             "has_license_conflict", "readme_license", "license_file_license",
-            "copyright_notice", "status", "license_determination_reason"
+            "copyright_notice", "status", "license_determination_reason",
+            "is_dual_licensed", "dual_license_relationship", "has_third_party_licenses",
+            "third_party_license_location"
         ]
         
         # Add any missing columns with None values
