@@ -1,3 +1,13 @@
+# ============================================================================
+# Configuration and Setup Section
+# ============================================================================
+# This section handles all the initial setup including:
+# - Importing required libraries for HTTP requests, JSON processing, and data analysis
+# - Setting up logging configuration with multiple handlers for different aspects
+# - Loading environment variables for API keys and configuration
+# - Configuring API settings for GitHub and Gemini LLM
+# - Setting up UTF-8 encoding for proper character handling
+
 import os
 import re
 import json
@@ -16,6 +26,16 @@ from tqdm import tqdm
 import google.generativeai as genai
 
 SCORE_THRESHOLD = 65
+
+# ============================================================================
+# Logging Configuration Section
+# ============================================================================
+# Sets up different loggers for various aspects of the application:
+# - Main application logger: Tracks overall application flow and errors
+# - URL construction logger: Specifically logs URL parsing and construction steps
+# - LLM interaction logger: Records all interactions with the Gemini LLM
+# - Substep execution logger: Tracks detailed progress of repository processing
+# Each logger writes to both console and dedicated log files with timestamps
 
 # Configure logging
 logging.basicConfig(
@@ -54,6 +74,16 @@ import sys
 import codecs
 sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
 sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
+
+# ============================================================================
+# Environment and API Configuration Section
+# ============================================================================
+# Handles:
+# - Loading environment variables from .env file
+# - Configuring LLM settings including model selection and prompts
+# - Setting up API keys for GitHub and Gemini
+# - Configuring proxy settings if available
+# - Validating API configurations before use
 
 # Load environment variables
 load_dotenv()
@@ -119,7 +149,37 @@ class Kind(Enum):
     DIR = "DIR"
     FILE = "FILE"
 
+# ============================================================================
+# GitHub API Client Class
+# ============================================================================
+# Implements the GitHub API client with methods for:
+# - Making authenticated requests with proper headers and rate limit handling
+# - Fetching repository information including metadata and structure
+# - Getting license information from repository
+# - Managing branches and tags with version resolution
+# - Handling proxy configurations and connection retries
+
 class GitHubAPI:
+    """
+    A client class for interacting with the GitHub API.
+    
+    This class provides methods to interact with GitHub's REST API, including:
+    - Authentication using GitHub tokens with proper header management
+    - Rate limit handling with automatic retry and wait mechanisms
+    - Repository information retrieval including metadata and structure
+    - License information retrieval with fallback mechanisms
+    - Branch and tag management with version resolution
+    - Proxy support with automatic fallback to direct connection
+    
+    The class implements robust error handling and logging for all operations.
+    
+    Attributes:
+        BASE_URL (str): The base URL for GitHub's API (https://api.github.com)
+        token (str): GitHub authentication token loaded from environment
+        headers (dict): HTTP headers including authentication and API version
+        session (requests.Session): HTTP session for making requests with proxy support
+    """
+    
     BASE_URL = "https://api.github.com"
     
     def __init__(self):
@@ -167,15 +227,40 @@ class GitHubAPI:
             raise
 
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
-        """Make a request to GitHub API with rate limit handling."""
+        """
+        Makes an authenticated request to the GitHub API with rate limit handling.
+        
+        This method implements:
+        - Automatic rate limit detection and handling
+        - Request retry logic with exponential backoff
+        - Proper error handling and logging
+        - Response validation and JSON parsing
+        
+        Args:
+            endpoint (str): The API endpoint to request (e.g., '/repos/owner/repo')
+            params (Optional[Dict]): Query parameters for the request
+                Example: {'ref': 'main', 'recursive': '1'}
+            
+        Returns:
+            Dict: The JSON response from the API
+            
+        Raises:
+            requests.exceptions.HTTPError: If the request fails with a non-200 status code
+            requests.exceptions.RequestException: For network or connection errors
+            ValueError: If the response cannot be parsed as JSON
+        """
+        # Construct the full API URL
         url = f"{self.BASE_URL}{endpoint}"
         logger.debug(f"Making request to: {url}")
         if params:
             logger.debug(f"Request parameters: {params}")
         
+        # Implement rate limit handling with retry logic
         while True:
             response = self.session.get(url, params=params)
+            # Check for rate limit exceeded
             if response.status_code == 403 and "rate limit" in response.text.lower():
+                # Calculate wait time based on rate limit reset time
                 reset_time = int(response.headers.get("X-RateLimit-Reset", 0))
                 wait_time = max(reset_time - time.time(), 0) + 1
                 logger.warning(f"Rate limited. Waiting {wait_time:.0f} seconds...")
@@ -186,40 +271,200 @@ class GitHubAPI:
             return response.json()
 
     def get_repo_info(self, owner: str, repo: str) -> Dict:
-        """Get repository information."""
+        """
+        Retrieves detailed information about a GitHub repository.
+        
+        This method fetches:
+        - Repository metadata (name, description, etc.)
+        - Default branch information
+        - Repository statistics
+        - Owner information
+        - Repository settings
+        
+        Args:
+            owner (str): Repository owner/organization name
+            repo (str): Repository name
+            
+        Returns:
+            Dict: Repository information including:
+                - name: Repository name
+                - description: Repository description
+                - default_branch: Default branch name
+                - owner: Owner information
+                - created_at: Creation timestamp
+                - updated_at: Last update timestamp
+                - stars_count: Number of stars
+                - forks_count: Number of forks
+        """
         logger.info(f"Fetching repository info for {owner}/{repo}")
         return self._make_request(f"/repos/{owner}/{repo}")
 
     def get_branches(self, owner: str, repo: str) -> List[Dict]:
-        """Get all branches."""
+        """
+        Retrieves all branches for a repository.
+        
+        This method fetches:
+        - Branch names
+        - Commit SHAs
+        - Protection rules
+        - Latest commit information
+        
+        Args:
+            owner (str): Repository owner/organization name
+            repo (str): Repository name
+            
+        Returns:
+            List[Dict]: List of branch information, each containing:
+                - name: Branch name
+                - commit: Latest commit information
+                - protected: Whether branch is protected
+                - protection_url: URL to protection rules
+        """
         logger.info(f"Fetching branches for {owner}/{repo}")
         return self._make_request(f"/repos/{owner}/{repo}/branches")
 
     def get_tags(self, owner: str, repo: str) -> List[Dict]:
-        """Get all tags."""
+        """
+        Retrieves all tags for a repository.
+        
+        This method fetches:
+        - Tag names
+        - Commit SHAs
+        - Tag creation information
+        - Tag message/description
+        
+        Args:
+            owner (str): Repository owner/organization name
+            repo (str): Repository name
+            
+        Returns:
+            List[Dict]: List of tag information, each containing:
+                - name: Tag name
+                - commit: Commit information
+                - zipball_url: URL to download zip archive
+                - tarball_url: URL to download tar archive
+        """
         logger.info(f"Fetching tags for {owner}/{repo}")
         return self._make_request(f"/repos/{owner}/{repo}/tags")
 
     def get_tree(self, owner: str, repo: str, sha: str) -> Dict:
-        """Get repository tree."""
+        """
+        Retrieves the complete repository tree structure.
+        
+        This method fetches:
+        - File and directory structure
+        - File modes and types
+        - File sizes
+        - SHA hashes
+        - URLs for each item
+        
+        Args:
+            owner (str): Repository owner/organization name
+            repo (str): Repository name
+            sha (str): Commit SHA or branch name to get tree for
+            
+        Returns:
+            Dict: Repository tree structure containing:
+                - sha: Tree SHA
+                - url: API URL for the tree
+                - tree: List of tree items, each containing:
+                    - path: File/directory path
+                    - mode: File mode
+                    - type: Item type (blob/tree)
+                    - sha: Item SHA
+                    - size: File size (for blobs)
+                    - url: API URL for the item
+        """
         logger.info(f"Fetching tree for {owner}/{repo} at {sha}")
         return self._make_request(f"/repos/{owner}/{repo}/git/trees/{sha}", {"recursive": "1"})
 
     def get_license(self, owner: str, repo: str, ref: Optional[str] = None) -> Optional[Dict]:
-        """Get repository license information."""
+        """
+        Retrieves license information for a repository.
+        
+        This method:
+        - Checks for LICENSE file in repository
+        - Detects license type using GitHub's license detection
+        - Retrieves license content
+        - Provides license metadata
+        
+        Args:
+            owner (str): Repository owner/organization name
+            repo (str): Repository name
+            ref (Optional[str]): Reference (branch/tag/commit) to check license for
+            
+        Returns:
+            Optional[Dict]: License information if found, containing:
+                - name: License name
+                - path: Path to license file
+                - sha: License file SHA
+                - size: License file size
+                - url: URL to license file
+                - html_url: Web URL for license file
+                - git_url: Git URL for license file
+                - download_url: Raw content URL
+                - type: File type
+                - content: Base64 encoded content
+                - encoding: Content encoding
+                - _links: Related URLs
+                - license: License metadata including:
+                    - key: License identifier
+                    - name: License name
+                    - spdx_id: SPDX identifier
+                    - url: License URL
+                    - node_id: GitHub node ID
+            None if no license is found
+        """
         logger.info(f"Fetching license info for {owner}/{repo} at ref: {ref}")
         try:
+            # Add ref parameter if specified
             params = {"ref": ref} if ref else None
             return self._make_request(f"/repos/{owner}/{repo}/license", params=params)
         except requests.exceptions.HTTPError as e:
+            # Handle 404 (no license found) gracefully
             if e.response.status_code == 404:
                 logger.warning(f"No license found for {owner}/{repo}")
                 return None
             logger.error(f"Error fetching license: {str(e)}")
             raise
 
+# ============================================================================
+# URL Processing Functions
+# ============================================================================
+# Contains functions for:
+# - Parsing GitHub URLs into components (owner, repo, path)
+# - Resolving versions to specific Git references
+# - Finding license files in repository structure
+# - Processing repository trees for file analysis
+# - Handling different URL formats and edge cases
+
 def parse_github_url(url: str) -> Tuple[str, str, Kind]:
-    """Parse GitHub URL into repo URL, subpath, and kind."""
+    """
+    Parses a GitHub URL into its components.
+    
+    This function handles:
+    - Standard GitHub repository URLs
+    - URLs with specific branches/tags
+    - URLs pointing to specific files
+    - URLs pointing to directories
+    - URLs with query parameters
+    
+    Args:
+        url (str): GitHub URL to parse
+            Examples:
+            - https://github.com/owner/repo
+            - https://github.com/owner/repo/tree/branch
+            - https://github.com/owner/repo/blob/branch/file.txt
+        
+    Returns:
+        Tuple[str, str, Kind]: Tuple containing:
+            - Repository URL (e.g., https://github.com/owner/repo)
+            - Subpath within repository (e.g., src/main.py)
+            - Kind of URL (REPO/DIR/FILE)
+            
+    Raises:
+        ValueError: If URL is not a valid GitHub URL or has invalid format
+    """
     logger.info(f"Parsing GitHub URL: {url}")
     parsed = urlparse(url)
     if parsed.netloc != "github.com":
@@ -247,34 +492,60 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
     return repo_url, sub_path, Kind.DIR
 
 def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
-    """Resolve version to a specific ref. Returns (resolved_version, used_default_branch)."""
+    """
+    Resolves a version string to a specific Git reference.
+    
+    This function implements:
+    - Version string parsing and normalization
+    - Branch and tag matching
+    - Fuzzy matching for similar versions
+    - Default branch fallback
+    - Version range handling
+    
+    Args:
+        api (GitHubAPI): GitHub API client
+        owner (str): Repository owner
+        repo (str): Repository name
+        version (Optional[str]): Version string to resolve
+            Can be:
+            - Branch name
+            - Tag name
+            - Version number
+            - Package version string
+            
+    Returns:
+        Tuple[str, bool]: Tuple containing:
+            - Resolved version (branch/tag name)
+            - Whether default branch was used (True if no match found)
+    """
     logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
     
-    # Get repository info first to get the default branch
+    # Get repository info to determine default branch
     repo_info = api.get_repo_info(owner, repo)
     default_branch = repo_info["default_branch"]
     logger.info(f"Repository default branch: {default_branch}")
     
+    # Handle case where no version is specified
     if not version:
         logger.debug("No version specified, using default branch")
         return default_branch, True
     
-    # Convert version to string if it's a number
+    # Convert version to string and handle package name format
     version_str = str(version) if version is not None else None
     logger.debug(f"Converted version to string: {version_str}")
     
-    # Extract version from package name if present (e.g. "@package@version")
+    # Extract version from package name if present
     if version_str and "@" in version_str:
         version_str = version_str.split("@")[-1]
         logger.debug(f"Extracted version from package name: {version_str}")
     
-    # Get all branches and tags
+    # Get all available branches and tags
     branches = api.get_branches(owner, repo)
     tags = api.get_tags(owner, repo)
     
     logger.debug(f"Found {len(branches)} branches and {len(tags)} tags")
     
-    # Prepare candidates for fuzzy matching
+    # Prepare candidates for matching
     candidates = {
         branch["name"]: branch["name"]  # Store branch name instead of SHA
         for branch in branches
@@ -284,6 +555,7 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
         for tag in tags
     })
     
+    # Handle case where no candidates are found
     if not candidates:
         logger.warning("No branches or tags found, using default branch")
         return default_branch, True
@@ -295,14 +567,14 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
         logger.info(f"Found exact version match: {version_str}")
         return version_str, False
     
-    # Try to find a candidate that contains the version string
+    # Try partial match
     for candidate in candidates:
         if version_str in candidate:
             logger.info(f"Found candidate containing version: {candidate}")
             return candidate, False
     
-    # If no direct match, try fuzzy matching with different strategies
-    # First try token sort ratio for better handling of version numbers
+    # Try fuzzy matching with different strategies
+    # First try token sort ratio for version numbers
     best_match = process.extractOne(
         version_str,
         candidates.keys(),
@@ -310,6 +582,7 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
         score_cutoff=SCORE_THRESHOLD  # Increased minimum score threshold
     )
     
+    # If token sort ratio fails, try partial ratio
     if not best_match:
         # If token sort ratio fails, try partial ratio for better substring matching
         best_match = process.extractOne(
@@ -319,11 +592,12 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
             score_cutoff= SCORE_THRESHOLD  # Increased minimum score threshold
         )
     
+    # Handle case where no match is found
     if not best_match:
         logger.warning(f"No matching version found for {version_str}, using default branch")
         return default_branch, True
     
-    # process.extractOne returns (matched_string, score, index)
+    # Extract match details
     matched_version, score, _ = best_match
     logger.info(f"Best match: {matched_version} (score: {score})")
     
@@ -355,6 +629,7 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
         return [int(part) for part in version_parts]
     
     try:
+        # Extract version numbers for comparison
         requested_version = extract_version_numbers(version_str)
         latest_version = None
         latest_version_nums = [0]  # Initialize with a very low version
@@ -385,7 +660,29 @@ def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str
         return matched_version, False
 
 def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
-    """Find license files in the path map."""
+    """
+    Finds license files in a repository tree.
+    
+    This function:
+    - Searches for files matching license keywords
+    - Handles different license file naming conventions
+    - Converts API URLs to web URLs
+    - Supports searching in specific subpaths
+    - Logs search process and results
+    
+    Args:
+        path_map (Dict[str, Any]): Repository tree structure
+            Must contain:
+            - tree: List of file/directory items
+            - resolved_version: Version being analyzed
+        sub_path (str): Subpath to search in
+        keywords (List[str]): Keywords to match against filenames
+            Common keywords: ['license', 'licenses', 'copying', 'notice']
+            
+    Returns:
+        List[str]: List of URLs to license files
+            Each URL is a GitHub web interface URL
+    """
     logger.info(f"Searching for license files in {sub_path or 'root'} with keywords: {keywords}")
     url_logger.info(f"Starting license file search in {sub_path or 'root'}")
     url_logger.info(f"Search keywords: {keywords}")
@@ -496,7 +793,33 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
     return results
 
 def draw_file_tree(tree_items: List[Dict], indent: str = "", is_last: bool = True, prefix: str = "") -> List[str]:
-    """Draw a tree structure for the repository files."""
+    """
+    Generates a text representation of the repository file tree.
+    
+    This function:
+    - Creates a hierarchical tree structure
+    - Uses ASCII characters for tree visualization
+    - Sorts items (directories first, then files)
+    - Handles nested directories
+    - Maintains proper indentation
+    
+    Args:
+        tree_items (List[Dict]): List of tree items
+            Each item should have:
+            - path: Full path of the item
+            - type: 'blob' for files, 'tree' for directories
+        indent (str): Current indentation level
+        is_last (bool): Whether this is the last item at current level
+        prefix (str): Prefix for the current level
+        
+    Returns:
+        List[str]: List of lines representing the tree structure
+            Example:
+            ├── src/
+            │   ├── main.py
+            │   └── utils.py
+            └── README.md
+    """
     lines = []
     
     # Sort items: directories first, then files, both alphabetically
@@ -535,7 +858,22 @@ def draw_file_tree(tree_items: List[Dict], indent: str = "", is_last: bool = Tru
     return lines
 
 def save_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = "repository_trees.log"):
-    """Save the repository tree structure to a log file."""
+    """
+    Saves the repository tree structure to a log file.
+    
+    This function:
+    - Generates tree structure using draw_file_tree
+    - Adds metadata (repo URL, version, timestamp)
+    - Appends to existing log file
+    - Handles file encoding and errors
+    
+    Args:
+        repo_url (str): Repository URL
+        version (str): Version/branch name
+        tree_items (List[Dict]): Tree structure to save
+        log_file (str): Path to log file
+            Default: "repository_trees.log"
+    """
     logger.info(f"Saving tree structure for {repo_url} at version {version}")
     
     # Create the tree structure
@@ -562,7 +900,26 @@ def save_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_f
         logger.error(f"Failed to save tree structure: {str(e)}")
 
 def get_file_content(api: GitHubAPI, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
-    """Get the content of a file from GitHub."""
+    """
+    Retrieves the content of a file from GitHub.
+    
+    This function:
+    - Converts GitHub web URLs to raw content URLs
+    - Handles different file encodings
+    - Implements error handling
+    - Supports different reference types (branch/tag/commit)
+    
+    Args:
+        api (GitHubAPI): GitHub API client
+        owner (str): Repository owner
+        repo (str): Repository name
+        path (str): File path relative to repository root
+        ref (str): Reference (branch/tag/commit)
+        
+    Returns:
+        Optional[str]: File content if found, None otherwise
+            Content is returned as a string with proper encoding
+    """
     try:
         # Convert GitHub web URL to raw content URL
         raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
@@ -574,7 +931,24 @@ def get_file_content(api: GitHubAPI, owner: str, repo: str, path: str, ref: str)
         return None
 
 def find_readme(tree_items: List[Dict], sub_path: str = "") -> Optional[str]:
-    """Find README file in the given path."""
+    """
+    Finds README file in the repository tree.
+    
+    This function:
+    - Searches for common README file patterns
+    - Checks both specified subpath and root
+    - Handles different README naming conventions
+    - Supports case-insensitive matching
+    
+    Args:
+        tree_items (List[Dict]): Repository tree structure
+        sub_path (str): Subpath to search in
+            Default: "" (search in root)
+            
+    Returns:
+        Optional[str]: Path to README file if found, None otherwise
+            Example: "docs/README.md"
+    """
     readme_patterns = ["readme", "read.me"]
     base_path = sub_path.rstrip("/")
     
@@ -595,8 +969,44 @@ def find_readme(tree_items: List[Dict], sub_path: str = "") -> Optional[str]:
     
     return None
 
+# ============================================================================
+# License Analysis Functions
+# ============================================================================
+# Implements functions for:
+# - Analyzing license content using LLM
+# - Extracting copyright information
+# - Constructing copyright notices
+# - Finding GitHub URLs from package URLs
+# - Handling different license formats and types
+
 def analyze_license_content(content: str) -> Dict[str, Any]:
-    """Use Gemini API to analyze license content."""
+    """
+    Analyzes license content using the Gemini LLM.
+    
+    This function:
+    - Uses Gemini API for license analysis
+    - Detects license type and version
+    - Identifies dual licensing
+    - Finds third-party license references
+    - Provides confidence scores
+    
+    Args:
+        content (str): License content to analyze
+            Can be:
+            - Full license text
+            - License file content
+            - README license section
+            
+    Returns:
+        Dict[str, Any]: Analysis results including:
+            - licenses: List of detected licenses (SPDX identifiers)
+            - is_dual_licensed: Whether multiple licenses are present
+            - dual_license_relationship: How licenses relate (AND/OR)
+            - has_third_party_licenses: Whether third-party licenses are mentioned
+            - third_party_license_location: Where to find third-party licenses
+            - license_relationship: How main and third-party licenses relate
+            - confidence: Analysis confidence score (0.0-1.0)
+    """
     if not USE_LLM:
         logger.info("LLM analysis is disabled, returning empty analysis")
         return {
@@ -646,7 +1056,25 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
         }
 
 def get_last_update_time(api: GitHubAPI, owner: str, repo: str, ref: str) -> str:
-    """Get the last update time for a specific ref."""
+    """
+    Gets the last update time for a repository reference.
+    
+    This function:
+    - Fetches commit history
+    - Extracts commit date
+    - Handles different date formats
+    - Provides fallback to current year
+    
+    Args:
+        api (GitHubAPI): GitHub API client
+        owner (str): Repository owner
+        repo (str): Repository name
+        ref (str): Reference (branch/tag/commit)
+        
+    Returns:
+        str: Year of last update
+            Example: "2024"
+    """
     try:
         # Get the commit history for the ref
         commits = api._make_request(f"/repos/{owner}/{repo}/commits", {"sha": ref, "per_page": 1})
@@ -660,7 +1088,26 @@ def get_last_update_time(api: GitHubAPI, owner: str, repo: str, ref: str) -> str
     return datetime.now().year
 
 def extract_copyright_info(content: str) -> Optional[str]:
-    """Extract copyright information from text content."""
+    """
+    Extracts copyright information from text content.
+    
+    This function:
+    - Uses LLM to analyze text
+    - Identifies copyright notices
+    - Handles different copyright formats
+    - Extracts year and owner information
+    
+    Args:
+        content (str): Text content to analyze
+            Can be:
+            - License file content
+            - README content
+            - Source file headers
+            
+    Returns:
+        Optional[str]: Copyright notice if found, None otherwise
+            Example: "Copyright (c) 2024 John Doe"
+    """
     if not USE_LLM:
         return None
         
@@ -703,7 +1150,28 @@ def extract_copyright_info(content: str) -> Optional[str]:
     return None
 
 def construct_copyright_notice(api: GitHubAPI, owner: str, repo: str, ref: str, component_name: str, readme_content: Optional[str] = None, license_content: Optional[str] = None) -> str:
-    """Construct a copyright notice if one is not found."""
+    """
+    Constructs a copyright notice for a component.
+    
+    This function:
+    - Extracts existing copyright notices
+    - Falls back to repository metadata
+    - Uses LLM for analysis if available
+    - Constructs default notice if needed
+    
+    Args:
+        api (GitHubAPI): GitHub API client
+        owner (str): Repository owner
+        repo (str): Repository name
+        ref (str): Reference (branch/tag/commit)
+        component_name (str): Name of the component
+        readme_content (Optional[str]): README content
+        license_content (Optional[str]): License content
+        
+    Returns:
+        str: Constructed copyright notice
+            Example: "Copyright (c) 2024 Component Name original author and authors"
+    """
     # Try to extract copyright from content first
     copyright_notice = None
     
@@ -750,7 +1218,26 @@ Text to analyze:
     return copyright_notice
 
 def find_github_url_from_package_url(package_url: str) -> Optional[str]:
-    """Use LLM to find GitHub URL from a package URL (e.g., Maven, NPM)."""
+    """
+    Attempts to find a GitHub URL from a package URL.
+    
+    This function:
+    - Uses LLM to analyze package URL
+    - Supports multiple package managers
+    - Provides confidence scores
+    - Handles different URL formats
+    
+    Args:
+        package_url (str): Package URL
+            Examples:
+            - npm: https://www.npmjs.com/package/package-name
+            - maven: https://mvnrepository.com/artifact/group/artifact
+            - pypi: https://pypi.org/project/package-name
+            
+    Returns:
+        Optional[str]: GitHub URL if found, None otherwise
+            Example: "https://github.com/owner/repo"
+    """
     if not USE_LLM:
         logger.info("LLM is disabled, skipping GitHub URL lookup")
         return None
@@ -798,13 +1285,58 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
         llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
     return None
 
+# ============================================================================
+# Repository Processing Functions
+# ============================================================================
+# Contains the main repository processing logic:
+# - Processing individual repositories
+# - Finding and analyzing licenses
+# - Handling different license scenarios
+# - Managing error cases
+# - Generating comprehensive reports
+
 def process_repository(
     api: GitHubAPI,
     github_url: str,
     version: Optional[str],
     license_keywords: List[str] = ["license", "licenses", "copying", "notice"]
 ) -> Dict[str, Any]:
-    """Process a single repository and return license information."""
+    """
+    Processes a GitHub repository to extract license information.
+    
+    This function implements a comprehensive analysis pipeline:
+    1. URL validation and parsing
+    2. Repository information retrieval
+    3. Version resolution
+    4. License file detection
+    5. License content analysis
+    6. Copyright notice extraction
+    7. Conflict detection
+    
+    Args:
+        api (GitHubAPI): GitHub API client
+        github_url (str): GitHub repository URL
+        version (Optional[str]): Version to analyze
+        license_keywords (List[str]): Keywords to identify license files
+            
+    Returns:
+        Dict[str, Any]: Processing results including:
+            - input_url: Original input URL
+            - repo_url: Repository URL
+            - input_version: Requested version
+            - resolved_version: Actual version used
+            - used_default_branch: Whether default branch was used
+            - component_name: Name of the component
+            - license_files: URLs to license files
+            - license_analysis: Detailed license analysis
+            - license_type: Primary license type
+            - has_license_conflict: Whether conflicts were found
+            - readme_license: License from README
+            - license_file_license: License from files
+            - copyright_notice: Copyright information
+            - status: Processing status
+            - license_determination_reason: Explanation of results
+    """
     substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
     try:
         # Store original input URL
@@ -1231,7 +1763,45 @@ def process_repository(
             "license_determination_reason": f"Error: {error_msg}"
         }
 
+# ============================================================================
+# Main Execution Function
+# ============================================================================
+# The main entry point that:
+# - Initializes the application
+# - Reads input data
+# - Processes repositories
+# - Generates output
+# - Handles errors and cleanup
+
 def main():
+    """
+    Main execution function for the GitHub License Analyzer.
+    
+    This function implements the complete workflow:
+    1. Environment and API initialization
+    2. Input file processing
+    3. Repository analysis
+    4. Results compilation
+    5. Output generation
+    6. Error handling
+    7. Cleanup
+    
+    The function expects:
+    - input.xlsx: Excel file with GitHub URLs and optional versions
+    - .env file: Environment variables for API keys
+    
+    It produces:
+    - output_{timestamp}.xlsx: Detailed analysis results
+    - Multiple log files for different aspects
+    - Temporary files for intermediate results
+    
+    Error handling:
+    - Validates environment variables
+    - Checks API connectivity
+    - Handles file I/O errors
+    - Manages API rate limits
+    - Provides detailed error logging
+    """
     logger.info("Starting GitHub License Analyzer")
     
     # Check environment variables
@@ -1272,6 +1842,7 @@ def main():
         logger.info(f"Version: {row.get('version')}")
         
         try:
+            # Process each repository
             result = process_repository(
                 api,
                 row["github_url"],
@@ -1341,6 +1912,11 @@ def main():
         logger.warning(f"Failed to remove temporary file: {str(e)}")
     
     logger.info("Processing complete")
+
+# ============================================================================
+# Script Entry Point
+# ============================================================================
+# Standard Python script entry point that calls the main function
 
 if __name__ == "__main__":
     main()
