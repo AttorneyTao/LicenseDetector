@@ -475,19 +475,29 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
     if len(path_parts) < 2:
         logger.error(f"Invalid path parts: {path_parts}")
         raise ValueError("Invalid GitHub URL format")
-    
+
     owner, repo = path_parts[:2]
     repo_url = f"https://github.com/{owner}/{repo}"
-    
+
     if len(path_parts) <= 2:
         logger.debug(f"URL is a repository: {repo_url}")
         return repo_url, "", Kind.REPO
-    
-    sub_path = "/".join(path_parts[2:])
-    if "." in path_parts[-1]:
+
+    # Handle URLs that include 'tree/<branch>' or 'blob/<branch>' segments
+    sub_parts = path_parts[2:]
+    if sub_parts[0] in {"tree", "blob"}:
+        if len(sub_parts) < 2:
+            logger.error(f"Invalid tree/blob URL format: {path_parts}")
+            raise ValueError("Invalid GitHub URL format")
+        sub_parts = sub_parts[2:]
+
+    sub_path = "/".join(sub_parts)
+
+    # Determine kind based on original indicator or file extension
+    if path_parts[2] == "blob" or (sub_path and "." in sub_parts[-1]):
         logger.debug(f"URL is a file: {repo_url}/{sub_path}")
         return repo_url, sub_path, Kind.FILE
-    
+
     logger.debug(f"URL is a directory: {repo_url}/{sub_path}")
     return repo_url, sub_path, Kind.DIR
 
