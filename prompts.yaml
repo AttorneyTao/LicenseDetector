@@ -1,0 +1,81 @@
+license_analysis: |
+  Analyze the following text and determine:
+        1. What is the main license specified? Use standard SPDX identifiers (e.g., Apache-2.0, MIT, GPL-3.0, etc.)
+        2. Is this project dual licensed (e.g., MIT OR Apache-2.0)? If yes, what are the licenses and their relationship?
+        3. Are there any mentions of third-party components with different licenses? If yes, where can they be found (e.g., specific section or URL)?
+        4. What is the relationship between the main license(s) and third-party licenses?
+        
+        Text:
+        {content}
+        
+        Please provide the analysis in JSON format with the following structure:
+        {{
+            "main_licenses": ["license1", "license2"],  # List of main licenses using standard SPDX identifiers
+            "is_dual_licensed": true/false,
+            "dual_license_relationship": "AND/OR/none",
+            "has_third_party_licenses": true/false,
+            "third_party_license_location": "section name or URL where third-party licenses can be found",
+            "license_relationship": "AND/OR/none",  # Relationship between main and third-party licenses
+            "confidence": 0.0-1.0
+        }}
+        
+        Note: Always use standard SPDX identifiers for licenses. Common examples:
+        - Apache-2.0
+        - MIT
+        - GPL-2.0-or-later
+        - GPL-3.0-only
+        - LGPL-2.1-or-later
+        - LGPL-3.0-only
+        - BSD-2-Clause
+        - BSD-3-Clause
+        - ISC
+        - MPL-2.0
+        - AGPL-3.0
+version_resolve: |
+  You are a GitHub repository version resolver.
+  Here is the list of all available branches and tags (choose only from these):
+  {candidate_versions}
+
+  The user requested version string: {version}
+
+  Please determine the most appropriate branch or tag name the user wants. Only return one value, and it must be strictly from the above list. Do not return SHA, explanations, or anything else.
+  If you cannot determine or there is no suitable match, return "{default_branch}".
+
+  Return in the following JSON format:
+  {{
+      "resolved_version": "xxx",
+      "used_default_branch": true/false
+  }}
+
+copyright_extract: |
+  Analyze the following text and extract copyright information.
+  Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices.
+  If found, return the exact copyright notice.
+  If not found, return null.
+
+  Text:
+  {content}
+
+  Return the result in JSON format:
+  {{
+      "copyright_notice": "exact copyright notice if found, otherwise null"
+  }}
+
+copyright_analysis: |
+ Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
+
+  Text to analyze:
+  {combined_content}
+
+github_url_finder: |
+  Given the following package URL, find the corresponding GitHub repository URL if it exists.
+        Package URL: {package_url}
+        
+        Return the result in JSON format:
+        {{
+            "github_url": "https://github.com/owner/repo if found, otherwise null",
+            "confidence": 0.0-1.0
+        }}
+        
+        Only return a GitHub URL if you are confident it is the correct repository.
+        If you are not sure, return null.

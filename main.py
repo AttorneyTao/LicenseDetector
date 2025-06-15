@@ -8,6 +8,13 @@
 # - Configuring API settings for GitHub and Gemini LLM
 # - Setting up UTF-8 encoding for proper character handling
 
+# Set the default encoding for stdout and stderr to utf-8
+import sys
+import codecs
+
+# ============================================================================
+# Import Required Libraries Section
+# ============================================================================
 import os
 import re
 import json
@@ -25,7 +32,17 @@ from rapidfuzz import process, fuzz
 from tqdm import tqdm
 import google.generativeai as genai
 
+# ============================================================================
+# Load Prompts Section
+import yaml
+with open("prompts.yaml", "r", encoding="utf-8") as f:
+    PROMPTS = yaml.safe_load(f)
+
+# ============================================================================  
+# Configuration and Setup Section
+
 SCORE_THRESHOLD = 65
+
 
 # ============================================================================
 # Logging Configuration Section
@@ -69,9 +86,15 @@ substep_handler = logging.FileHandler('substep.log', encoding='utf-8')
 substep_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 substep_logger.addHandler(substep_handler)
 
-# Set the default encoding for stdout and stderr to utf-8
-import sys
-import codecs
+
+# Configure version resolve logging
+version_resolve_logger = logging.getLogger('version_resolve')
+version_resolve_logger.setLevel(logging.INFO)
+version_resolve_handler = logging.FileHandler('version_resolve.log', encoding='utf-8')
+version_resolve_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+version_resolve_logger.addHandler(version_resolve_handler)
+
+
 sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
 sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
@@ -95,43 +118,43 @@ logger.info(f"LLM analysis is {'enabled' if USE_LLM else 'disabled'}")
 # Gemini API Configuration
 GEMINI_CONFIG = {
     "api_key": os.getenv("GEMINI_API_KEY"),
-    "model": "gemini-2.5-flash-preview-05-20",
-    "prompts": {
-        "license_analysis": """
-        Analyze the following text and determine:
-        1. What is the main license specified? Use standard SPDX identifiers (e.g., Apache-2.0, MIT, GPL-3.0, etc.)
-        2. Is this project dual licensed (e.g., MIT OR Apache-2.0)? If yes, what are the licenses and their relationship?
-        3. Are there any mentions of third-party components with different licenses? If yes, where can they be found (e.g., specific section or URL)?
-        4. What is the relationship between the main license(s) and third-party licenses?
+    "model": "gemini-2.5-flash-preview-05-20"
+    # "prompts": {
+    #     "license_analysis": """
+    #     Analyze the following text and determine:
+    #     1. What is the main license specified? Use standard SPDX identifiers (e.g., Apache-2.0, MIT, GPL-3.0, etc.)
+    #     2. Is this project dual licensed (e.g., MIT OR Apache-2.0)? If yes, what are the licenses and their relationship?
+    #     3. Are there any mentions of third-party components with different licenses? If yes, where can they be found (e.g., specific section or URL)?
+    #     4. What is the relationship between the main license(s) and third-party licenses?
         
-        Text:
-        {content}
+    #     Text:
+    #     {content}
         
-        Please provide the analysis in JSON format with the following structure:
-        {{
-            "main_licenses": ["license1", "license2"],  # List of main licenses using standard SPDX identifiers
-            "is_dual_licensed": true/false,
-            "dual_license_relationship": "AND/OR/none",
-            "has_third_party_licenses": true/false,
-            "third_party_license_location": "section name or URL where third-party licenses can be found",
-            "license_relationship": "AND/OR/none",  # Relationship between main and third-party licenses
-            "confidence": 0.0-1.0
-        }}
+    #     Please provide the analysis in JSON format with the following structure:
+    #     {{
+    #         "main_licenses": ["license1", "license2"],  # List of main licenses using standard SPDX identifiers
+    #         "is_dual_licensed": true/false,
+    #         "dual_license_relationship": "AND/OR/none",
+    #         "has_third_party_licenses": true/false,
+    #         "third_party_license_location": "section name or URL where third-party licenses can be found",
+    #         "license_relationship": "AND/OR/none",  # Relationship between main and third-party licenses
+    #         "confidence": 0.0-1.0
+    #     }}
         
-        Note: Always use standard SPDX identifiers for licenses. Common examples:
-        - Apache-2.0
-        - MIT
-        - GPL-2.0-or-later
-        - GPL-3.0-only
-        - LGPL-2.1-or-later
-        - LGPL-3.0-only
-        - BSD-2-Clause
-        - BSD-3-Clause
-        - ISC
-        - MPL-2.0
-        - AGPL-3.0
-        """
-    }
+    #     Note: Always use standard SPDX identifiers for licenses. Common examples:
+    #     - Apache-2.0
+    #     - MIT
+    #     - GPL-2.0-or-later
+    #     - GPL-3.0-only
+    #     - LGPL-2.1-or-later
+    #     - LGPL-3.0-only
+    #     - BSD-2-Clause
+    #     - BSD-3-Clause
+    #     - ISC
+    #     - MPL-2.0
+    #     - AGPL-3.0
+    #     """
+    # }
 }
 
 # Validate Gemini API configuration only if LLM is enabled
@@ -325,18 +348,18 @@ class GitHubAPI:
 
     def get_tags(self, owner: str, repo: str) -> List[Dict]:
         """
-        Retrieves all tags for a repository.
-        
+        Retrieves all tags for a repository, handling pagination.
+
         This method fetches:
         - Tag names
         - Commit SHAs
         - Tag creation information
         - Tag message/description
-        
+
         Args:
             owner (str): Repository owner/organization name
             repo (str): Repository name
-            
+
         Returns:
             List[Dict]: List of tag information, each containing:
                 - name: Tag name
@@ -344,8 +367,26 @@ class GitHubAPI:
                 - zipball_url: URL to download zip archive
                 - tarball_url: URL to download tar archive
         """
-        logger.info(f"Fetching tags for {owner}/{repo}")
-        return self._make_request(f"/repos/{owner}/{repo}/tags")
+        logger.info(f"Fetching tags for {owner}/{repo} (with pagination)")
+        tags = []
+        page = 1
+        per_page = 100  # GitHub API max per_page is 100
+        while True:
+            response = self._make_request(
+                f"/repos/{owner}/{repo}/tags",
+                params={"per_page": per_page, "page": page}
+            )
+            if not response:
+                break
+            if isinstance(response, dict):
+                # Defensive: sometimes API returns dict with 'message' on error
+                logger.warning(f"Unexpected response format when fetching tags: {response}")
+                break
+            tags.extend(response)
+            if len(response) < per_page:
+                break
+            page += 1
+        return tags
 
     def get_tree(self, owner: str, repo: str, sha: str) -> Dict:
         """
@@ -491,173 +532,277 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
     logger.debug(f"URL is a directory: {repo_url}/{sub_path}")
     return repo_url, sub_path, Kind.DIR
 
+# def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
+#     """
+#     Resolves a version string to a specific Git reference.
+    
+#     This function implements:
+#     - Version string parsing and normalization
+#     - Branch and tag matching
+#     - Fuzzy matching for similar versions
+#     - Default branch fallback
+#     - Version range handling
+    
+#     Args:
+#         api (GitHubAPI): GitHub API client
+#         owner (str): Repository owner
+#         repo (str): Repository name
+#         version (Optional[str]): Version string to resolve
+#             Can be:
+#             - Branch name
+#             - Tag name
+#             - Version number
+#             - Package version string
+            
+#     Returns:
+#         Tuple[str, bool]: Tuple containing:
+#             - Resolved version (branch/tag name)
+#             - Whether default branch was used (True if no match found)
+#     """
+#     logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
+    
+#     # Get repository info to determine default branch
+#     repo_info = api.get_repo_info(owner, repo)
+#     default_branch = repo_info["default_branch"]
+#     logger.info(f"Repository default branch: {default_branch}")
+    
+#     # Handle case where no version is specified
+#     if not version:
+#         logger.debug("No version specified, using default branch")
+#         return default_branch, True
+    
+#     # Convert version to string and handle package name format
+#     version_str = str(version) if version is not None else None
+#     logger.debug(f"Converted version to string: {version_str}")
+    
+#     # Extract version from package name if present
+#     if version_str and "@" in version_str:
+#         version_str = version_str.split("@")[-1]
+#         logger.debug(f"Extracted version from package name: {version_str}")
+    
+#     # Get all available branches and tags
+#     branches = api.get_branches(owner, repo)
+#     tags = api.get_tags(owner, repo)
+    
+#     logger.debug(f"Found {len(branches)} branches and {len(tags)} tags")
+    
+#     # Prepare candidates for matching
+#     candidates = {
+#         branch["name"]: branch["name"]  # Store branch name instead of SHA
+#         for branch in branches
+#     }
+#     candidates.update({
+#         tag["name"]: tag["name"]  # Store tag name instead of SHA
+#         for tag in tags
+#     })
+    
+#     # Handle case where no candidates are found
+#     if not candidates:
+#         logger.warning("No branches or tags found, using default branch")
+#         return default_branch, True
+    
+#     logger.debug(f"Available candidates: {list(candidates.keys())}")
+    
+#     # Try exact match first
+#     if version_str in candidates:
+#         logger.info(f"Found exact version match: {version_str}")
+#         return version_str, False
+    
+#     # Try partial match
+#     for candidate in candidates:
+#         if version_str in candidate:
+#             logger.info(f"Found candidate containing version: {candidate}")
+#             return candidate, False
+    
+#     # Try fuzzy matching with different strategies
+#     # First try token sort ratio for version numbers
+#     best_match = process.extractOne(
+#         version_str,
+#         candidates.keys(),
+#         scorer=fuzz.token_sort_ratio,
+#         score_cutoff=SCORE_THRESHOLD  # Increased minimum score threshold
+#     )
+    
+#     # If token sort ratio fails, try partial ratio
+#     if not best_match:
+#         # If token sort ratio fails, try partial ratio for better substring matching
+#         best_match = process.extractOne(
+#             version_str,
+#             candidates.keys(),
+#             scorer=fuzz.partial_ratio,
+#             score_cutoff= SCORE_THRESHOLD  # Increased minimum score threshold
+#         )
+    
+#     # Handle case where no match is found
+#     if not best_match:
+#         logger.warning(f"No matching version found for {version_str}, using default branch")
+#         return default_branch, True
+    
+#     # Extract match details
+#     matched_version, score, _ = best_match
+#     logger.info(f"Best match: {matched_version} (score: {score})")
+    
+#     # If score is too low, use default branch
+#     if score < SCORE_THRESHOLD:  # Increased minimum score threshold
+#         logger.warning(f"Best match score {score} is too low, using default branch")
+#         return default_branch, True
+    
+#     # Check if the requested version falls within any version range
+#     def is_version_in_range(version_str: str, range_str: str) -> bool:
+#         """Check if a version falls within a version range."""
+#         if not range_str.endswith('.x'):
+#             return False
+            
+#         range_base = range_str[:-2]  # Remove '.x'
+#         return version_str.startswith(range_base)
+    
+#     # Check if the version falls within any version range
+#     for candidate in candidates:
+#         if is_version_in_range(version_str, candidate):
+#             logger.info(f"Version {version_str} falls within range {candidate}")
+#             return candidate, False
+    
+#     # Compare versions to find the latest available version
+#     def extract_version_numbers(version_str: str) -> List[int]:
+#         """Extract numeric parts from version string."""
+#         # Remove any non-numeric characters except dots
+#         version_parts = re.findall(r'\d+', version_str)
+#         return [int(part) for part in version_parts]
+    
+#     try:
+#         # Extract version numbers for comparison
+#         requested_version = extract_version_numbers(version_str)
+#         latest_version = None
+#         latest_version_nums = [0]  # Initialize with a very low version
+        
+#         # Find the latest version from candidates
+#         for candidate in candidates:
+#             if candidate.endswith('.x'):
+#                 # For version ranges, use the base version
+#                 base_version = candidate[:-2]
+#                 candidate_nums = extract_version_numbers(base_version)
+#             else:
+#                 candidate_nums = extract_version_numbers(candidate)
+            
+#             if candidate_nums > latest_version_nums:
+#                 latest_version = candidate
+#                 latest_version_nums = candidate_nums
+        
+#         # Compare requested version with latest available version
+#         if requested_version > latest_version_nums:
+#             logger.info(f"Requested version {version_str} is newer than latest available version {latest_version}, using default branch")
+#             return default_branch, True
+#         else:
+#             logger.info(f"Using matched version {matched_version} as it's not newer than latest available version {latest_version}")
+#             return matched_version, False
+            
+#     except Exception as e:
+#         logger.warning(f"Failed to compare versions: {str(e)}, using matched version")
+#         return matched_version, False
+
 def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
     """
-    Resolves a version string to a specific Git reference.
-    
-    This function implements:
-    - Version string parsing and normalization
-    - Branch and tag matching
-    - Fuzzy matching for similar versions
-    - Default branch fallback
-    - Version range handling
-    
-    Args:
-        api (GitHubAPI): GitHub API client
-        owner (str): Repository owner
-        repo (str): Repository name
-        version (Optional[str]): Version string to resolve
-            Can be:
-            - Branch name
-            - Tag name
-            - Version number
-            - Package version string
-            
-    Returns:
-        Tuple[str, bool]: Tuple containing:
-            - Resolved version (branch/tag name)
-            - Whether default branch was used (True if no match found)
+    First try text matching, fallback to Gemini LLM if no match.
+    Supports "0.x" style ranges, "v" prefix, and case-insensitive matching.
     """
-    logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
-    
-    # Get repository info to determine default branch
+    version_resolve_logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
+
+    # Get default branch
     repo_info = api.get_repo_info(owner, repo)
     default_branch = repo_info["default_branch"]
-    logger.info(f"Repository default branch: {default_branch}")
-    
-    # Handle case where no version is specified
-    if not version:
-        logger.debug("No version specified, using default branch")
-        return default_branch, True
-    
-    # Convert version to string and handle package name format
-    version_str = str(version) if version is not None else None
-    logger.debug(f"Converted version to string: {version_str}")
-    
-    # Extract version from package name if present
-    if version_str and "@" in version_str:
-        version_str = version_str.split("@")[-1]
-        logger.debug(f"Extracted version from package name: {version_str}")
-    
-    # Get all available branches and tags
+    version_resolve_logger.info(f"Repository default branch: {default_branch}")
+
+    # Get all branches and tags
     branches = api.get_branches(owner, repo)
     tags = api.get_tags(owner, repo)
-    
-    logger.debug(f"Found {len(branches)} branches and {len(tags)} tags")
-    
-    # Prepare candidates for matching
-    candidates = {
-        branch["name"]: branch["name"]  # Store branch name instead of SHA
-        for branch in branches
-    }
-    candidates.update({
-        tag["name"]: tag["name"]  # Store tag name instead of SHA
-        for tag in tags
-    })
-    
-    # Handle case where no candidates are found
-    if not candidates:
-        logger.warning("No branches or tags found, using default branch")
+    candidate_versions = [b["name"] for b in branches] + [t["name"] for t in tags]
+    version_resolve_logger.info(f"Candidate versions: {candidate_versions}")
+
+    # No version specified, use default branch
+    if not version:
+        version_resolve_logger.info("No version specified, using default branch")
         return default_branch, True
-    
-    logger.debug(f"Available candidates: {list(candidates.keys())}")
-    
-    # Try exact match first
-    if version_str in candidates:
-        logger.info(f"Found exact version match: {version_str}")
-        return version_str, False
-    
-    # Try partial match
-    for candidate in candidates:
-        if version_str in candidate:
-            logger.info(f"Found candidate containing version: {candidate}")
+
+    version_str = str(version).strip()
+    version_str_lower = version_str.lower().lstrip("v")
+
+    # 1. Exact match ignoring "v" prefix and case
+    for candidate in candidate_versions:
+        cand_lower = candidate.lower().lstrip("v")
+        if version_str_lower == cand_lower:
+            version_resolve_logger.info(f"Found exact version match (ignore v/case): {candidate}")
             return candidate, False
-    
-    # Try fuzzy matching with different strategies
-    # First try token sort ratio for version numbers
-    best_match = process.extractOne(
-        version_str,
-        candidates.keys(),
-        scorer=fuzz.token_sort_ratio,
-        score_cutoff=SCORE_THRESHOLD  # Increased minimum score threshold
-    )
-    
-    # If token sort ratio fails, try partial ratio
-    if not best_match:
-        # If token sort ratio fails, try partial ratio for better substring matching
-        best_match = process.extractOne(
-            version_str,
-            candidates.keys(),
-            scorer=fuzz.partial_ratio,
-            score_cutoff= SCORE_THRESHOLD  # Increased minimum score threshold
-        )
-    
-    # Handle case where no match is found
-    if not best_match:
-        logger.warning(f"No matching version found for {version_str}, using default branch")
-        return default_branch, True
-    
-    # Extract match details
-    matched_version, score, _ = best_match
-    logger.info(f"Best match: {matched_version} (score: {score})")
-    
-    # If score is too low, use default branch
-    if score < SCORE_THRESHOLD:  # Increased minimum score threshold
-        logger.warning(f"Best match score {score} is too low, using default branch")
-        return default_branch, True
-    
-    # Check if the requested version falls within any version range
-    def is_version_in_range(version_str: str, range_str: str) -> bool:
-        """Check if a version falls within a version range."""
-        if not range_str.endswith('.x'):
-            return False
-            
-        range_base = range_str[:-2]  # Remove '.x'
-        return version_str.startswith(range_base)
-    
-    # Check if the version falls within any version range
-    for candidate in candidates:
-        if is_version_in_range(version_str, candidate):
-            logger.info(f"Version {version_str} falls within range {candidate}")
+
+    # 2. Range match like "0.x"
+    if version_str_lower.endswith(".x"):
+        base = version_str_lower[:-2]
+        for candidate in candidate_versions:
+            cand_lower = candidate.lower().lstrip("v")
+            if cand_lower.startswith(base + "."):
+                version_resolve_logger.info(f"Found version range match: {candidate} for {version_str}")
+                return candidate, False
+
+    # 3. Partial match (e.g. "1.2" matches "1.2.3")
+    for candidate in candidate_versions:
+        cand_lower = candidate.lower().lstrip("v")
+        if version_str_lower in cand_lower:
+            version_resolve_logger.info(f"Found partial version match: {candidate}")
             return candidate, False
-    
-    # Compare versions to find the latest available version
-    def extract_version_numbers(version_str: str) -> List[int]:
-        """Extract numeric parts from version string."""
-        # Remove any non-numeric characters except dots
-        version_parts = re.findall(r'\d+', version_str)
-        return [int(part) for part in version_parts]
-    
-    try:
-        # Extract version numbers for comparison
-        requested_version = extract_version_numbers(version_str)
-        latest_version = None
-        latest_version_nums = [0]  # Initialize with a very low version
-        
-        # Find the latest version from candidates
-        for candidate in candidates:
-            if candidate.endswith('.x'):
-                # For version ranges, use the base version
-                base_version = candidate[:-2]
-                candidate_nums = extract_version_numbers(base_version)
-            else:
-                candidate_nums = extract_version_numbers(candidate)
-            
-            if candidate_nums > latest_version_nums:
-                latest_version = candidate
-                latest_version_nums = candidate_nums
-        
-        # Compare requested version with latest available version
-        if requested_version > latest_version_nums:
-            logger.info(f"Requested version {version_str} is newer than latest available version {latest_version}, using default branch")
-            return default_branch, True
-        else:
-            logger.info(f"Using matched version {matched_version} as it's not newer than latest available version {latest_version}")
-            return matched_version, False
-            
-    except Exception as e:
-        logger.warning(f"Failed to compare versions: {str(e)}, using matched version")
-        return matched_version, False
+
+    # 4. Fallback: Gemini LLM
+    if USE_LLM:
+        try:
+            # prompt = f"""
+            #             You are a GitHub repository version resolver.
+            #             Here is the list of all available branches and tags (choose only from these):
+            #             {candidate_versions}
+
+            #             The user requested version string: {version}
+
+            #             Please determine the most appropriate branch or tag name the user wants. Only return one value, and it must be strictly from the above list. Do not return SHA, explanations, or anything else.
+            #             If you cannot determine or there is no suitable match, return "{default_branch}".
+
+            #             Return in the following JSON format:
+            #             {{
+            #                 "resolved_version": "xxx",  // must be one of the candidates above
+            #                 "used_default_branch": true/false  // whether the default branch was used
+            #             }}
+            # """
+            prompt = PROMPTS["version_resolve"].format(
+                candidate_versions=candidate_versions,
+                version=version_str,
+                default_branch=default_branch
+            )
+
+            llm_logger.info("Version Resolve Request:")
+            llm_logger.info(f"Prompt: {prompt}")
+            version_resolve_logger.info("Version Resolve LLM Request:")
+
+            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+            response = model.generate_content(prompt)
+            llm_logger.info("Version Resolve Response:")
+            llm_logger.info(f"Response: {response.text}")
+            version_resolve_logger.info("Version Resolve LLM Response:")
+            version_resolve_logger.info(f"Response: {response.text}")
+
+            if response.text:
+                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                    resolved_version = result.get("resolved_version", default_branch)
+                    used_default_branch = result.get("used_default_branch", resolved_version == default_branch)
+                    logger.info(f"LLM resolved version: {resolved_version}, used_default_branch: {used_default_branch}")
+                    version_resolve_logger.info(f"LLM resolved version: {resolved_version}, used_default_branch: {used_default_branch}")
+                    return resolved_version, used_default_branch
+                else:
+                    version_resolve_logger.warning("No JSON found in version resolve response")
+        except Exception as e:
+            version_resolve_logger.error(f"Failed to resolve version via LLM: {str(e)}", exc_info=True)
+
+    # fallback
+    version_resolve_logger.info("No version matched, using default branch")
+    return default_branch, True
+
 
 def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
     """
@@ -1019,11 +1164,14 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
         }
         
     try:
-        prompt = GEMINI_CONFIG["prompts"]["license_analysis"].format(content=content)
+        prompt = PROMPTS["license_analysis"].format(content=content)
         
         # Generate content using the official client
         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+        llm_logger.info("License Analysis Request:")
+        llm_logger.info(f"Prompt: {prompt}")
         response = model.generate_content(prompt)
+        llm_logger.info(f"License Analysis Response:{response.text}")
         
         # Parse the response text into a dictionary
         if response.text:
@@ -1112,20 +1260,21 @@ def extract_copyright_info(content: str) -> Optional[str]:
         return None
         
     try:
-        prompt = """
-        Analyze the following text and extract copyright information.
-        Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices.
-        If found, return the exact copyright notice.
-        If not found, return null.
+        # prompt = """
+        # Analyze the following text and extract copyright information.
+        # Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices.
+        # If found, return the exact copyright notice.
+        # If not found, return null.
         
-        Text:
-        {content}
+        # Text:
+        # {content}
         
-        Return the result in JSON format:
-        {{
-            "copyright_notice": "exact copyright notice if found, otherwise null"
-        }}
-        """
+        # Return the result in JSON format:
+        # {{
+        #     "copyright_notice": "exact copyright notice if found, otherwise null"
+        # }}
+        # """
+        prompt = PROMPTS["copyright_extract"].format(content=content)
         
         llm_logger.info("Copyright Extraction Request:")
         llm_logger.info(f"Prompt: {prompt.format(content=content)}")
@@ -1185,10 +1334,12 @@ def construct_copyright_notice(api: GitHubAPI, owner: str, repo: str, ref: str, 
     if combined_content:
         # Use LLM to analyze copyright information
         try:
-            prompt = f"""Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
+            # prompt = f"""Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
 
-Text to analyze:
-{combined_content}"""
+            #             Text to analyze:
+            #             {combined_content}
+            #         """
+            prompt = PROMPTS["copyright_analysis"].format(combined_content=combined_content)
             
             llm_logger.info("Copyright Notice Construction Request:")
             llm_logger.info(f"Prompt: {prompt}")
@@ -1243,19 +1394,20 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
         return None
         
     try:
-        prompt = f"""
-        Given the following package URL, find the corresponding GitHub repository URL if it exists.
-        Package URL: {package_url}
+        # prompt = f"""
+        # Given the following package URL, find the corresponding GitHub repository URL if it exists.
+        # Package URL: {package_url}
         
-        Return the result in JSON format:
-        {{
-            "github_url": "https://github.com/owner/repo if found, otherwise null",
-            "confidence": 0.0-1.0
-        }}
+        # Return the result in JSON format:
+        # {{
+        #     "github_url": "https://github.com/owner/repo if found, otherwise null",
+        #     "confidence": 0.0-1.0
+        # }}
         
-        Only return a GitHub URL if you are confident it is the correct repository.
-        If you are not sure, return null.
-        """
+        # Only return a GitHub URL if you are confident it is the correct repository.
+        # If you are not sure, return null.
+        # """
+        prompt = PROMPTS["github_url_finder"].format(package_url=package_url)
         
         llm_logger.info("GitHub URL Lookup Request:")
         llm_logger.info(f"Prompt: {prompt}")
