@@ -13,7 +13,8 @@ import sys
 import codecs
 
 from core.logging_utils import setup_logging
-from core.github_api import GitHubAPI
+from core.github_utils import GitHubAPI, find_github_url_from_package_url
+
 
 # ============================================================================
 # Import Required Libraries Section
@@ -1377,74 +1378,74 @@ def construct_copyright_notice(api: GitHubAPI, owner: str, repo: str, ref: str, 
     
     return copyright_notice
 
-def find_github_url_from_package_url(package_url: str) -> Optional[str]:
-    """
-    Attempts to find a GitHub URL from a package URL.
+# def find_github_url_from_package_url(package_url: str) -> Optional[str]:
+#     """
+#     Attempts to find a GitHub URL from a package URL.
     
-    This function:
-    - Uses LLM to analyze package URL
-    - Supports multiple package managers
-    - Provides confidence scores
-    - Handles different URL formats
+#     This function:
+#     - Uses LLM to analyze package URL
+#     - Supports multiple package managers
+#     - Provides confidence scores
+#     - Handles different URL formats
     
-    Args:
-        package_url (str): Package URL
-            Examples:
-            - npm: https://www.npmjs.com/package/package-name
-            - maven: https://mvnrepository.com/artifact/group/artifact
-            - pypi: https://pypi.org/project/package-name
+#     Args:
+#         package_url (str): Package URL
+#             Examples:
+#             - npm: https://www.npmjs.com/package/package-name
+#             - maven: https://mvnrepository.com/artifact/group/artifact
+#             - pypi: https://pypi.org/project/package-name
             
-    Returns:
-        Optional[str]: GitHub URL if found, None otherwise
-            Example: "https://github.com/owner/repo"
-    """
-    if not USE_LLM:
-        logger.info("LLM is disabled, skipping GitHub URL lookup")
-        return None
+#     Returns:
+#         Optional[str]: GitHub URL if found, None otherwise
+#             Example: "https://github.com/owner/repo"
+#     """
+#     if not USE_LLM:
+#         logger.info("LLM is disabled, skipping GitHub URL lookup")
+#         return None
         
-    try:
-        # prompt = f"""
-        # Given the following package URL, find the corresponding GitHub repository URL if it exists.
-        # Package URL: {package_url}
+#     try:
+#         # prompt = f"""
+#         # Given the following package URL, find the corresponding GitHub repository URL if it exists.
+#         # Package URL: {package_url}
         
-        # Return the result in JSON format:
-        # {{
-        #     "github_url": "https://github.com/owner/repo if found, otherwise null",
-        #     "confidence": 0.0-1.0
-        # }}
+#         # Return the result in JSON format:
+#         # {{
+#         #     "github_url": "https://github.com/owner/repo if found, otherwise null",
+#         #     "confidence": 0.0-1.0
+#         # }}
         
-        # Only return a GitHub URL if you are confident it is the correct repository.
-        # If you are not sure, return null.
-        # """
-        prompt = PROMPTS["github_url_finder"].format(package_url=package_url)
+#         # Only return a GitHub URL if you are confident it is the correct repository.
+#         # If you are not sure, return null.
+#         # """
+#         prompt = PROMPTS["github_url_finder"].format(package_url=package_url)
         
-        llm_logger.info("GitHub URL Lookup Request:")
-        llm_logger.info(f"Prompt: {prompt}")
+#         llm_logger.info("GitHub URL Lookup Request:")
+#         llm_logger.info(f"Prompt: {prompt}")
         
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = model.generate_content(prompt)
+#         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+#         response = model.generate_content(prompt)
         
-        llm_logger.info("GitHub URL Lookup Response:")
-        llm_logger.info(f"Response: {response.text}")
+#         llm_logger.info("GitHub URL Lookup Response:")
+#         llm_logger.info(f"Response: {response.text}")
         
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                github_url = result.get("github_url")
-                confidence = result.get("confidence", 0.0)
+#         if response.text:
+#             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+#             if json_match:
+#                 result = json.loads(json_match.group())
+#                 github_url = result.get("github_url")
+#                 confidence = result.get("confidence", 0.0)
                 
-                llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
+#                 llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
                 
-                if github_url and confidence >= 0.7:  # Only accept if confidence is high enough
-                    return github_url
-                else:
-                    llm_logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
-            else:
-                llm_logger.warning("No JSON found in GitHub URL lookup response")
-    except Exception as e:
-        llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
-    return None
+#                 if github_url and confidence >= 0.7:  # Only accept if confidence is high enough
+#                     return github_url
+#                 else:
+#                     llm_logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
+#             else:
+#                 llm_logger.warning("No JSON found in GitHub URL lookup response")
+#     except Exception as e:
+#         llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
+#     return None
 
 # ============================================================================
 # Repository Processing Functions
