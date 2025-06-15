@@ -53,3 +53,5 @@ output*
 bfg-1.15.0.jar
 
 examples/
+temp/
+outputs/

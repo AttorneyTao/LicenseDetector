@@ -59,7 +59,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('github_license_analyzer.log', encoding='utf-8'),
+        logging.FileHandler(r'logs/github_license_analyzer.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
@@ -68,21 +68,21 @@ logger = logging.getLogger(__name__)
 # Configure URL construction logging
 url_logger = logging.getLogger('url_construction')
 url_logger.setLevel(logging.INFO)
-url_handler = logging.FileHandler('url_construction.log', encoding='utf-8')
+url_handler = logging.FileHandler(r'logs/url_construction.log', encoding='utf-8')
 url_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 url_logger.addHandler(url_handler)
 
 # Configure LLM logging
 llm_logger = logging.getLogger('llm_interaction')
 llm_logger.setLevel(logging.INFO)
-llm_handler = logging.FileHandler('llm_interaction.log', encoding='utf-8')
+llm_handler = logging.FileHandler(r'logs/llm_interaction.log', encoding='utf-8')
 llm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 llm_logger.addHandler(llm_handler)
 
 # Add substep logging
 substep_logger = logging.getLogger('substep')
 substep_logger.setLevel(logging.INFO)
-substep_handler = logging.FileHandler('substep.log', encoding='utf-8')
+substep_handler = logging.FileHandler(r'logs/substep.log', encoding='utf-8')
 substep_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 substep_logger.addHandler(substep_handler)
 
@@ -90,7 +90,7 @@ substep_logger.addHandler(substep_handler)
 # Configure version resolve logging
 version_resolve_logger = logging.getLogger('version_resolve')
 version_resolve_logger.setLevel(logging.INFO)
-version_resolve_handler = logging.FileHandler('version_resolve.log', encoding='utf-8')
+version_resolve_handler = logging.FileHandler(r'logs/version_resolve.log', encoding='utf-8')
 version_resolve_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 version_resolve_logger.addHandler(version_resolve_handler)
 
@@ -2013,7 +2013,7 @@ def main():
             
             # Save intermediate results
             try:
-                pd.DataFrame(results).to_csv("temp_results.csv", index=False)
+                pd.DataFrame(results).to_csv("temp/temp_results.csv", index=False)
                 logger.debug("Saved intermediate results")
             except Exception as e:
                 logger.error(f"Failed to save intermediate results: {str(e)}", exc_info=True)
@@ -2048,7 +2048,7 @@ def main():
         output_df = output_df[required_columns]
         
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_file = f"output_{timestamp}.xlsx"
+        output_file = f"outputs/output_{timestamp}.xlsx"
         output_df.to_excel(output_file, index=False)
         logger.info(f"Results saved to {output_file}")
     except Exception as e:
@@ -2057,8 +2057,8 @@ def main():
     
     # Clean up temporary file
     try:
-        if os.path.exists("temp_results.csv"):
-            os.remove("temp_results.csv")
+        if os.path.exists("temp/temp_results.csv"):
+            os.remove("temp/temp_results.csv")
             logger.debug("Removed temporary results file")
     except Exception as e:
         logger.warning(f"Failed to remove temporary file: {str(e)}")
