@@ -25,7 +25,7 @@ import time
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse, unquote
 
 import pandas as pd
@@ -39,6 +39,7 @@ import google.generativeai as genai
 # Import internal packages
 #=============================================================================
 from core.github_utils import resolve_github_version
+from core.github_utils import parse_github_url
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI, find_github_url_from_package_url, resolve_github_version
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
@@ -148,61 +149,6 @@ class Kind(Enum):
     REPO = "REPO"
     DIR = "DIR"
     FILE = "FILE"
-
-
-
-def parse_github_url(url: str) -> Tuple[str, str, Kind]:
-    """
-    Parses a GitHub URL into its components.
-    
-    This function handles:
-    - Standard GitHub repository URLs
-    - URLs with specific branches/tags
-    - URLs pointing to specific files
-    - URLs pointing to directories
-    - URLs with query parameters
-    
-    Args:
-        url (str): GitHub URL to parse
-            Examples:
-            - https://github.com/owner/repo
-            - https://github.com/owner/repo/tree/branch
-            - https://github.com/owner/repo/blob/branch/file.txt
-        
-    Returns:
-        Tuple[str, str, Kind]: Tuple containing:
-            - Repository URL (e.g., https://github.com/owner/repo)
-            - Subpath within repository (e.g., src/main.py)
-            - Kind of URL (REPO/DIR/FILE)
-            
-    Raises:
-        ValueError: If URL is not a valid GitHub URL or has invalid format
-    """
-    logger.info(f"Parsing GitHub URL: {url}")
-    parsed = urlparse(url)
-    if parsed.netloc != "github.com":
-        logger.error(f"Invalid domain: {parsed.netloc}")
-        raise ValueError("Not a GitHub URL")
-    
-    path_parts = parsed.path.strip("/").split("/")
-    if len(path_parts) < 2:
-        logger.error(f"Invalid path parts: {path_parts}")
-        raise ValueError("Invalid GitHub URL format")
-    
-    owner, repo = path_parts[:2]
-    repo_url = f"https://github.com/{owner}/{repo}"
-    
-    if len(path_parts) <= 2:
-        logger.debug(f"URL is a repository: {repo_url}")
-        return repo_url, "", Kind.REPO
-    
-    sub_path = "/".join(path_parts[2:])
-    if "." in path_parts[-1]:
-        logger.debug(f"URL is a file: {repo_url}/{sub_path}")
-        return repo_url, sub_path, Kind.FILE
-    
-    logger.debug(f"URL is a directory: {repo_url}/{sub_path}")
-    return repo_url, sub_path, Kind.DIR
 
 
 
