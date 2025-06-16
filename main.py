@@ -38,10 +38,10 @@ import google.generativeai as genai
 #=============================================================================
 # Import internal packages
 #=============================================================================
+from core.github_utils import resolve_github_version
 from core.logging_utils import setup_logging
-from core.github_utils import GitHubAPI, find_github_url_from_package_url
+from core.github_utils import GitHubAPI, find_github_url_from_package_url, resolve_github_version
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
-from core.utils import is_sha_version
 
 # ============================================================================
 # Load Prompts Section
@@ -204,115 +204,6 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
     logger.debug(f"URL is a directory: {repo_url}/{sub_path}")
     return repo_url, sub_path, Kind.DIR
 
-
-
-def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
-    """
-    First try text matching, fallback to Gemini LLM if no match.
-    Supports "0.x" style ranges, "v" prefix, and case-insensitive matching.
-    """
-    version_resolve_logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
-
-        # 新增：如果version是SHA，直接返回
-    if version and is_sha_version(version):
-        version_resolve_logger.info(f"Version {version} detected as SHA, using directly.")
-        return version, False
-
-    # Get default branch
-    repo_info = api.get_repo_info(owner, repo)
-    default_branch = repo_info["default_branch"]
-    version_resolve_logger.info(f"Repository default branch: {default_branch}")
-
-    # Get all branches and tags
-    branches = api.get_branches(owner, repo)
-    tags = api.get_tags(owner, repo)
-    candidate_versions = [b["name"] for b in branches] + [t["name"] for t in tags]
-    version_resolve_logger.info(f"Candidate versions: {candidate_versions}")
-
-    # No version specified, use default branch
-    if not version:
-        version_resolve_logger.info("No version specified, using default branch")
-        return default_branch, True
-
-    version_str = str(version).strip()
-    version_str_lower = version_str.lower().lstrip("v")
-
-    # 1. Exact match ignoring "v" prefix and case
-    for candidate in candidate_versions:
-        cand_lower = candidate.lower().lstrip("v")
-        if version_str_lower == cand_lower:
-            version_resolve_logger.info(f"Found exact version match (ignore v/case): {candidate}")
-            return candidate, False
-
-    # 2. Range match like "0.x"
-    if version_str_lower.endswith(".x"):
-        base = version_str_lower[:-2]
-        for candidate in candidate_versions:
-            cand_lower = candidate.lower().lstrip("v")
-            if cand_lower.startswith(base + "."):
-                version_resolve_logger.info(f"Found version range match: {candidate} for {version_str}")
-                return candidate, False
-
-    # 3. Partial match (e.g. "1.2" matches "1.2.3")
-    for candidate in candidate_versions:
-        cand_lower = candidate.lower().lstrip("v")
-        if version_str_lower in cand_lower:
-            version_resolve_logger.info(f"Found partial version match: {candidate}")
-            return candidate, False
-
-    # 4. Fallback: Gemini LLM
-    if USE_LLM:
-        try:
-            # prompt = f"""
-            #             You are a GitHub repository version resolver.
-            #             Here is the list of all available branches and tags (choose only from these):
-            #             {candidate_versions}
-
-            #             The user requested version string: {version}
-
-            #             Please determine the most appropriate branch or tag name the user wants. Only return one value, and it must be strictly from the above list. Do not return SHA, explanations, or anything else.
-            #             If you cannot determine or there is no suitable match, return "{default_branch}".
-
-            #             Return in the following JSON format:
-            #             {{
-            #                 "resolved_version": "xxx",  // must be one of the candidates above
-            #                 "used_default_branch": true/false  // whether the default branch was used
-            #             }}
-            # """
-            prompt = PROMPTS["version_resolve"].format(
-                candidate_versions=candidate_versions,
-                version=version_str,
-                default_branch=default_branch
-            )
-
-            llm_logger.info("Version Resolve Request:")
-            llm_logger.info(f"Prompt: {prompt}")
-            version_resolve_logger.info("Version Resolve LLM Request:")
-
-            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-            response = model.generate_content(prompt)
-            llm_logger.info("Version Resolve Response:")
-            llm_logger.info(f"Response: {response.text}")
-            version_resolve_logger.info("Version Resolve LLM Response:")
-            version_resolve_logger.info(f"Response: {response.text}")
-
-            if response.text:
-                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                if json_match:
-                    result = json.loads(json_match.group())
-                    resolved_version = result.get("resolved_version", default_branch)
-                    used_default_branch = result.get("used_default_branch", resolved_version == default_branch)
-                    logger.info(f"LLM resolved version: {resolved_version}, used_default_branch: {used_default_branch}")
-                    version_resolve_logger.info(f"LLM resolved version: {resolved_version}, used_default_branch: {used_default_branch}")
-                    return resolved_version, used_default_branch
-                else:
-                    version_resolve_logger.warning("No JSON found in version resolve response")
-        except Exception as e:
-            version_resolve_logger.error(f"Failed to resolve version via LLM: {str(e)}", exc_info=True)
-
-    # fallback
-    version_resolve_logger.info("No version matched, using default branch")
-    return default_branch, True
 
 
 def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
