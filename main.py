@@ -41,6 +41,7 @@ import google.generativeai as genai
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI, find_github_url_from_package_url
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
+from core.utils import is_sha_version
 
 # ============================================================================
 # Load Prompts Section
@@ -205,12 +206,17 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
 
 
 
-def resolve_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
+def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
     """
     First try text matching, fallback to Gemini LLM if no match.
     Supports "0.x" style ranges, "v" prefix, and case-insensitive matching.
     """
     version_resolve_logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
+
+        # 新增：如果version是SHA，直接返回
+    if version and is_sha_version(version):
+        version_resolve_logger.info(f"Version {version} detected as SHA, using directly.")
+        return version, False
 
     # Get default branch
     repo_info = api.get_repo_info(owner, repo)
@@ -963,7 +969,7 @@ def process_repository(
         
         # Step 4: Resolve version
         substep_logger.info("Step 4/15: Resolving version")
-        resolved_version, used_default_branch = resolve_version(api, owner, repo, version)
+        resolved_version, used_default_branch = resolve_github_version(api, owner, repo, version)
         substep_logger.info(f"Resolved version to: {resolved_version}, used_default_branch: {used_default_branch}")
         
         # Step 5: Try to get license directly from GitHub API
