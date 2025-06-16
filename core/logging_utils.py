@@ -16,7 +16,7 @@ import codecs
 def setup_logging():
     # Configure logging
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(r'logs/github_license_analyzer.log', encoding='utf-8'),
@@ -54,11 +54,19 @@ def setup_logging():
     version_resolve_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     version_resolve_logger.addHandler(version_resolve_handler)
 
+    # Configure npm logging
+    npm_logger = logging.getLogger('npm')
+    npm_logger.setLevel(logging.INFO)
+    npm_handler = logging.FileHandler(r'logs/npm.log', encoding='utf-8')
+    npm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    npm_logger.addHandler(version_resolve_handler)
+
 
     return {
         "main": logger,
         "url": url_logger,
         "llm": llm_logger,
         "substep": substep_logger,
-        "version_resolve": version_resolve_logger
+        "version_resolve": version_resolve_logger,
+        "npm": npm_logger
     }

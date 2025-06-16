@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from core.config import GEMINI_CONFIG
+from .config import GEMINI_CONFIG
 import google.generativeai as genai
 from dotenv import load_dotenv
 import yaml
@@ -7,6 +7,8 @@ import os
 import logging
 import re
 import json
+
+
 
 
 
@@ -424,3 +426,5 @@ def construct_copyright_notice(year: str, owner: str, repo: str, ref: str, compo
         llm_logger.info(f"Constructed default copyright notice: {copyright_notice}")
 
     return copyright_notice
+
+
