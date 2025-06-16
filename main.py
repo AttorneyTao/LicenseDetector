@@ -135,6 +135,10 @@ load_dotenv()
 
 # Configuration
 USE_LLM = os.getenv("USE_LLM", "true").lower() == "true"
+logger = logging.getLogger('main')  # Use the main logger for general application logging
+substep_logger =logging.getLogger('substep')
+url_logger = logging.getLogger('url_construction')
+
 logger.info(f"LLM analysis is {'enabled' if USE_LLM else 'disabled'}")
 
 
