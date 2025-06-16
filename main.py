@@ -19,7 +19,6 @@ import codecs
 # Import Required Libraries Section
 # ============================================================================
 import os
-import re
 import json
 import time
 import logging
@@ -41,6 +40,8 @@ import google.generativeai as genai
 from core.github_utils import resolve_github_version
 from core.github_utils import parse_github_url
 from core.github_utils import save_github_tree_to_file
+from core.github_utils import get_file_content
+from core.github_utils import get_github_last_update_time
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI, find_github_url_from_package_url, resolve_github_version
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
@@ -48,6 +49,11 @@ from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
 # ============================================================================
 # Load Prompts Section
 import yaml
+
+from core.utils import find_readme
+from core.utils import analyze_license_content
+from core.utils import find_license_files
+from core.utils import construct_copyright_notice
 with open("prompts.yaml", "r", encoding="utf-8") as f:
     PROMPTS = yaml.safe_load(f)
 
@@ -70,44 +76,45 @@ os.makedirs("temp", exist_ok=True)
 # Each logger writes to both console and dedicated log files with timestamps
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(r'logs/github_license_analyzer.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+setup_logging()
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(levelname)s - %(message)s',
+#     handlers=[
+#         logging.FileHandler(r'logs/github_license_analyzer.log', encoding='utf-8'),
+#         logging.StreamHandler()
+#     ]
+# )
+# logger = logging.getLogger(__name__)
 
-# Configure URL construction logging
-url_logger = logging.getLogger('url_construction')
-url_logger.setLevel(logging.INFO)
-url_handler = logging.FileHandler(r'logs/url_construction.log', encoding='utf-8')
-url_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-url_logger.addHandler(url_handler)
+# # Configure URL construction logging
+# url_logger = logging.getLogger('url_construction')
+# url_logger.setLevel(logging.INFO)
+# url_handler = logging.FileHandler(r'logs/url_construction.log', encoding='utf-8')
+# url_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+# url_logger.addHandler(url_handler)
 
-# Configure LLM logging
-llm_logger = logging.getLogger('llm_interaction')
-llm_logger.setLevel(logging.INFO)
-llm_handler = logging.FileHandler(r'logs/llm_interaction.log', encoding='utf-8')
-llm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-llm_logger.addHandler(llm_handler)
+# # Configure LLM logging
+# llm_logger = logging.getLogger('llm_interaction')
+# llm_logger.setLevel(logging.INFO)
+# llm_handler = logging.FileHandler(r'logs/llm_interaction.log', encoding='utf-8')
+# llm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+# llm_logger.addHandler(llm_handler)
 
-# Add substep logging
-substep_logger = logging.getLogger('substep')
-substep_logger.setLevel(logging.INFO)
-substep_handler = logging.FileHandler(r'logs/substep.log', encoding='utf-8')
-substep_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-substep_logger.addHandler(substep_handler)
+# # Add substep logging
+# substep_logger = logging.getLogger('substep')
+# substep_logger.setLevel(logging.INFO)
+# substep_handler = logging.FileHandler(r'logs/substep.log', encoding='utf-8')
+# substep_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+# substep_logger.addHandler(substep_handler)
 
 
-# Configure version resolve logging
-version_resolve_logger = logging.getLogger('version_resolve')
-version_resolve_logger.setLevel(logging.INFO)
-version_resolve_handler = logging.FileHandler(r'logs/version_resolve.log', encoding='utf-8')
-version_resolve_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-version_resolve_logger.addHandler(version_resolve_handler)
+# # Configure version resolve logging
+# version_resolve_logger = logging.getLogger('version_resolve')
+# version_resolve_logger.setLevel(logging.INFO)
+# version_resolve_handler = logging.FileHandler(r'logs/version_resolve.log', encoding='utf-8')
+# version_resolve_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+# version_resolve_logger.addHandler(version_resolve_handler)
 
 
 #sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
@@ -150,209 +157,6 @@ if USE_LLM:
 
 
 
-def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
-    """
-    Finds license files in a repository tree.
-    
-    This function:
-    - Searches for files matching license keywords
-    - Handles different license file naming conventions
-    - Converts API URLs to web URLs
-    - Supports searching in specific subpaths
-    - Logs search process and results
-    
-    Args:
-        path_map (Dict[str, Any]): Repository tree structure
-            Must contain:
-            - tree: List of file/directory items
-            - resolved_version: Version being analyzed
-        sub_path (str): Subpath to search in
-        keywords (List[str]): Keywords to match against filenames
-            Common keywords: ['license', 'licenses', 'copying', 'notice']
-            
-    Returns:
-        List[str]: List of URLs to license files
-            Each URL is a GitHub web interface URL
-    """
-    logger.info(f"Searching for license files in {sub_path or 'root'} with keywords: {keywords}")
-    url_logger.info(f"Starting license file search in {sub_path or 'root'}")
-    url_logger.info(f"Search keywords: {keywords}")
-    results = []
-    base_path = sub_path.rstrip("/")
-    
-    # Ensure path_map is a dictionary and has a tree key
-    if not isinstance(path_map, dict) or "tree" not in path_map:
-        logger.warning(f"Invalid path map format: {path_map}")
-        url_logger.error(f"Invalid path map format: {path_map}")
-        return results
-    
-    # Ensure tree is a list
-    tree_items = path_map.get("tree", [])
-    if not isinstance(tree_items, list):
-        logger.warning(f"Tree is not a list: {tree_items}")
-        url_logger.error(f"Tree is not a list: {tree_items}")
-        return results
-    
-    # Get the resolved version from the path_map
-    resolved_version = path_map.get("resolved_version", "main")
-    logger.info(f"Using resolved version for URL construction: {resolved_version}")
-    url_logger.info(f"Using resolved version: {resolved_version}")
-    
-    url_logger.info(f"Processing {len(tree_items)} tree items")
-    
-    # Log all paths for debugging
-    url_logger.info("All paths in tree:")
-    for item in tree_items:
-        if isinstance(item, dict):
-            path = item.get("path", "")
-            type_ = item.get("type", "")
-            url_logger.info(f"Path: {path}, Type: {type_}")
-    
-    for item in tree_items:
-        # Ensure item is a dictionary
-        if not isinstance(item, dict):
-            logger.warning(f"Invalid tree item format: {item}")
-            url_logger.error(f"Invalid tree item format: {item}")
-            continue
-            
-        if item.get("type") != "blob":
-            continue
-            
-        path = item.get("path", "")
-        if not path:
-            continue
-            
-        if base_path and not path.startswith(base_path):
-            url_logger.debug(f"Skipping path {path} - not in base path {base_path}")
-            continue
-            
-        name = path.lower().split("/")[-1]
-        url_logger.debug(f"Checking file: {name}")
-        
-        if any(keyword in name for keyword in keywords):
-            logger.debug(f"Found license file: {path}")
-            url_logger.info(f"Found license file: {path}")
-            url_logger.info(f"Matching keyword found in: {name}")
-            
-            # Convert GitHub API URL to GitHub web interface URL
-            api_url = item.get("url", "")
-            if api_url:
-                try:
-                    url_logger.info("Processing API URL: " + api_url)
-                    
-                    # Get the repository info from the API URL
-                    if "/repos/" not in api_url:
-                        url_logger.error(f"Invalid API URL format (no /repos/): {api_url}")
-                        continue
-                        
-                    repo_parts = api_url.split("/repos/")[1].split("/")
-                    if len(repo_parts) < 2:
-                        url_logger.error(f"Invalid API URL format (insufficient parts): {api_url}")
-                        continue
-                        
-                    owner = repo_parts[0]
-                    repo = repo_parts[1]
-                    
-                    # Get just the filename from the path
-                    filename = path.split("/")[-1]
-                    
-                    # Log URL construction components
-                    url_logger.info("URL Construction Components:")
-                    url_logger.info(f"Original path: {path}")
-                    url_logger.info(f"API URL: {api_url}")
-                    url_logger.info(f"Owner: {owner}")
-                    url_logger.info(f"Repo: {repo}")
-                    url_logger.info(f"Resolved version: {resolved_version}")
-                    url_logger.info(f"Filename: {filename}")
-                    
-                    # Construct the GitHub web interface URL
-                    web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{filename}"
-                    url_logger.info(f"Constructed URL: {web_url}")
-                    
-                    results.append(web_url)
-                    logger.debug(f"Converted API URL to web URL: {web_url}")
-                except Exception as e:
-                    error_msg = f"Failed to convert API URL to web URL: {str(e)}"
-                    logger.warning(error_msg)
-                    url_logger.error(error_msg)
-                    url_logger.error(f"API URL that caused error: {api_url}")
-                    results.append(api_url)  # Fallback to original URL if conversion fails
-    
-    url_logger.info(f"Found {len(results)} license files")
-    url_logger.info(f"Final results: {results}")
-    logger.info(f"Found {len(results)} license files")
-    return results
-
-def get_file_content(api: GitHubAPI, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
-    """
-    Retrieves the content of a file from GitHub.
-    
-    This function:
-    - Converts GitHub web URLs to raw content URLs
-    - Handles different file encodings
-    - Implements error handling
-    - Supports different reference types (branch/tag/commit)
-    
-    Args:
-        api (GitHubAPI): GitHub API client
-        owner (str): Repository owner
-        repo (str): Repository name
-        path (str): File path relative to repository root
-        ref (str): Reference (branch/tag/commit)
-        
-    Returns:
-        Optional[str]: File content if found, None otherwise
-            Content is returned as a string with proper encoding
-    """
-    try:
-        # Convert GitHub web URL to raw content URL
-        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-        response = requests.get(raw_url)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        logger.warning(f"Failed to get content for {path}: {str(e)}")
-        return None
-
-def find_readme(tree_items: List[Dict], sub_path: str = "") -> Optional[str]:
-    """
-    Finds README file in the repository tree.
-    
-    This function:
-    - Searches for common README file patterns
-    - Checks both specified subpath and root
-    - Handles different README naming conventions
-    - Supports case-insensitive matching
-    
-    Args:
-        tree_items (List[Dict]): Repository tree structure
-        sub_path (str): Subpath to search in
-            Default: "" (search in root)
-            
-    Returns:
-        Optional[str]: Path to README file if found, None otherwise
-            Example: "docs/README.md"
-    """
-    readme_patterns = ["readme", "read.me"]
-    base_path = sub_path.rstrip("/")
-    
-    for item in tree_items:
-        if item.get("type") != "blob":
-            continue
-            
-        path = item.get("path", "")
-        if not path:
-            continue
-            
-        if base_path and not path.startswith(base_path):
-            continue
-            
-        name = path.lower().split("/")[-1]
-        if any(pattern in name for pattern in readme_patterns):
-            return path
-    
-    return None
-
 # ============================================================================
 # License Analysis Functions
 # ============================================================================
@@ -362,252 +166,6 @@ def find_readme(tree_items: List[Dict], sub_path: str = "") -> Optional[str]:
 # - Constructing copyright notices
 # - Finding GitHub URLs from package URLs
 # - Handling different license formats and types
-
-def analyze_license_content(content: str) -> Dict[str, Any]:
-    """
-    Analyzes license content using the Gemini LLM.
-    
-    This function:
-    - Uses Gemini API for license analysis
-    - Detects license type and version
-    - Identifies dual licensing
-    - Finds third-party license references
-    - Provides confidence scores
-    
-    Args:
-        content (str): License content to analyze
-            Can be:
-            - Full license text
-            - License file content
-            - README license section
-            
-    Returns:
-        Dict[str, Any]: Analysis results including:
-            - licenses: List of detected licenses (SPDX identifiers)
-            - is_dual_licensed: Whether multiple licenses are present
-            - dual_license_relationship: How licenses relate (AND/OR)
-            - has_third_party_licenses: Whether third-party licenses are mentioned
-            - third_party_license_location: Where to find third-party licenses
-            - license_relationship: How main and third-party licenses relate
-            - confidence: Analysis confidence score (0.0-1.0)
-    """
-    if not USE_LLM:
-        logger.info("LLM analysis is disabled, returning empty analysis")
-        return {
-            "licenses": [],
-            "is_dual_licensed": False,
-            "dual_license_relationship": "none",
-            "license_relationship": "none",
-            "confidence": 0.0,
-            "third_party_license_location": None
-        }
-        
-    try:
-        prompt = PROMPTS["license_analysis"].format(content=content)
-        
-        # Generate content using the official client
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        llm_logger.info("License Analysis Request:")
-        llm_logger.info(f"Prompt: {prompt}")
-        response = model.generate_content(prompt)
-        llm_logger.info(f"License Analysis Response:{response.text}")
-        
-        # Parse the response text into a dictionary
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                # Convert main_licenses to licenses for consistency
-                if "main_licenses" in result:
-                    result["licenses"] = result.pop("main_licenses")
-                return result
-            else:
-                logger.warning("No JSON found in license analysis response")
-                return {
-                    "licenses": [],
-                    "is_dual_licensed": False,
-                    "dual_license_relationship": "none",
-                    "license_relationship": "none",
-                    "confidence": 0.0,
-                    "third_party_license_location": None
-                }
-    except Exception as e:
-        logger.error(f"Failed to analyze license content: {str(e)}", exc_info=True)
-        return {
-            "licenses": [],
-            "is_dual_licensed": False,
-            "dual_license_relationship": "none",
-            "license_relationship": "none",
-            "confidence": 0.0,
-            "third_party_license_location": None
-        }
-
-def get_last_update_time(api: GitHubAPI, owner: str, repo: str, ref: str) -> str:
-    """
-    Gets the last update time for a repository reference.
-    
-    This function:
-    - Fetches commit history
-    - Extracts commit date
-    - Handles different date formats
-    - Provides fallback to current year
-    
-    Args:
-        api (GitHubAPI): GitHub API client
-        owner (str): Repository owner
-        repo (str): Repository name
-        ref (str): Reference (branch/tag/commit)
-        
-    Returns:
-        str: Year of last update
-            Example: "2024"
-    """
-    try:
-        # Get the commit history for the ref
-        commits = api._make_request(f"/repos/{owner}/{repo}/commits", {"sha": ref, "per_page": 1})
-        if commits and len(commits) > 0:
-            # Get the commit date from the first (most recent) commit
-            commit_date = commits[0]["commit"]["author"]["date"]
-            # Extract the year from the date
-            return commit_date.split("-")[0]
-    except Exception as e:
-        logger.warning(f"Failed to get last update time: {str(e)}")
-    return datetime.now().year
-
-def extract_copyright_info(content: str) -> Optional[str]:
-    """
-    Extracts copyright information from text content.
-    
-    This function:
-    - Uses LLM to analyze text
-    - Identifies copyright notices
-    - Handles different copyright formats
-    - Extracts year and owner information
-    
-    Args:
-        content (str): Text content to analyze
-            Can be:
-            - License file content
-            - README content
-            - Source file headers
-            
-    Returns:
-        Optional[str]: Copyright notice if found, None otherwise
-            Example: "Copyright (c) 2024 John Doe"
-    """
-    if not USE_LLM:
-        return None
-        
-    try:
-        # prompt = """
-        # Analyze the following text and extract copyright information.
-        # Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices.
-        # If found, return the exact copyright notice.
-        # If not found, return null.
-        
-        # Text:
-        # {content}
-        
-        # Return the result in JSON format:
-        # {{
-        #     "copyright_notice": "exact copyright notice if found, otherwise null"
-        # }}
-        # """
-        prompt = PROMPTS["copyright_extract"].format(content=content)
-        
-        llm_logger.info("Copyright Extraction Request:")
-        llm_logger.info(f"Prompt: {prompt.format(content=content)}")
-        
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = model.generate_content(prompt.format(content=content))
-        
-        llm_logger.info("Copyright Extraction Response:")
-        llm_logger.info(f"Response: {response.text}")
-        
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-            if json_match:
-                result = json.loads(json_match.group())
-                copyright_notice = result.get("copyright_notice")
-                llm_logger.info(f"Extracted copyright notice: {copyright_notice}")
-                return copyright_notice
-            else:
-                llm_logger.warning("No JSON found in copyright extraction response")
-    except Exception as e:
-        llm_logger.error(f"Failed to extract copyright info: {str(e)}", exc_info=True)
-    return None
-
-def construct_copyright_notice(api: GitHubAPI, owner: str, repo: str, ref: str, component_name: str, readme_content: Optional[str] = None, license_content: Optional[str] = None) -> str:
-    """
-    Constructs a copyright notice for a component.
-    
-    This function:
-    - Extracts existing copyright notices
-    - Falls back to repository metadata
-    - Uses LLM for analysis if available
-    - Constructs default notice if needed
-    
-    Args:
-        api (GitHubAPI): GitHub API client
-        owner (str): Repository owner
-        repo (str): Repository name
-        ref (str): Reference (branch/tag/commit)
-        component_name (str): Name of the component
-        readme_content (Optional[str]): README content
-        license_content (Optional[str]): License content
-        
-    Returns:
-        str: Constructed copyright notice
-            Example: "Copyright (c) 2024 Component Name original author and authors"
-    """
-    # Try to extract copyright from content first
-    copyright_notice = None
-    
-    # Combine README and license content for analysis
-    combined_content = ""
-    if readme_content:
-        combined_content += readme_content + "\n\n"
-    if license_content:
-        combined_content += license_content
-    
-    if combined_content:
-        # Use LLM to analyze copyright information
-        try:
-            # prompt = f"""Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
-
-            #             Text to analyze:
-            #             {combined_content}
-            #         """
-            prompt = PROMPTS["copyright_analysis"].format(combined_content=combined_content)
-            
-            llm_logger.info("Copyright Notice Construction Request:")
-            llm_logger.info(f"Prompt: {prompt}")
-            
-            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-            response = model.generate_content(prompt)
-            
-            llm_logger.info("Copyright Notice Construction Response:")
-            llm_logger.info(f"Response: {response.text}")
-            
-            if response.text:
-                text = response.text.strip()
-                if text and text.lower() != "none":
-                    copyright_notice = text
-                    llm_logger.info(f"Found copyright notice via LLM: {copyright_notice}")
-                else:
-                    llm_logger.info("No copyright notice found in LLM response")
-        except Exception as e:
-            llm_logger.error(f"Error using LLM for copyright analysis: {str(e)}", exc_info=True)
-    
-    # If no copyright found via LLM, construct one
-    if not copyright_notice:
-        year = get_last_update_time(api, owner, repo, ref)
-        copyright_notice = f"Copyright (c) {year} {component_name} original author and authors"
-        llm_logger.info(f"Constructed default copyright notice: {copyright_notice}")
-    
-    return copyright_notice
-
-
 
 def process_repository(
     api: GitHubAPI,
@@ -743,7 +301,7 @@ def process_repository(
                         "has_license_conflict": False,
                         "readme_license": None,
                         "license_file_license": license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None,
-                        "copyright_notice": construct_copyright_notice(api, owner, repo, resolved_version, component_name, None, license_content),
+                        "copyright_notice": construct_copyright_notice(get_github_last_update_time(api,owner,repo,resolved_version), owner, repo, resolved_version, component_name, None, license_content),
                         "status": "success",
                         "license_determination_reason": "License found through GitHub API"
                     }
@@ -836,7 +394,7 @@ def process_repository(
         # Step 11: Get copyright notice
         substep_logger.info("Step 11/15: Constructing copyright notice")
         copyright_notice = construct_copyright_notice(
-            api, owner, repo, resolved_version, component_name,
+            get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
             readme_content, license_content
         )
         substep_logger.info(f"Copyright notice: {copyright_notice}")

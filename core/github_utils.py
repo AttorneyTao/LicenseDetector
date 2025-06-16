@@ -625,7 +625,7 @@ def draw_github_file_tree(tree_items: List[Dict], indent: str = "", is_last: boo
     return lines
 
 
-def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = "repository_trees.log"):
+def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = r"logs/repository_trees.log"):
     """
     Saves the repository tree structure to a log file.
 
@@ -666,3 +666,68 @@ def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict]
         logger.debug(f"Tree structure saved to {log_file}")
     except Exception as e:
         logger.error(f"Failed to save tree structure: {str(e)}")
+
+
+def get_file_content(api: GitHubAPI, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
+    """
+    Retrieves the content of a file from GitHub.
+
+    This function:
+    - Converts GitHub web URLs to raw content URLs
+    - Handles different file encodings
+    - Implements error handling
+    - Supports different reference types (branch/tag/commit)
+
+    Args:
+        api (GitHubAPI): GitHub API client
+        owner (str): Repository owner
+        repo (str): Repository name
+        path (str): File path relative to repository root
+        ref (str): Reference (branch/tag/commit)
+
+    Returns:
+        Optional[str]: File content if found, None otherwise
+            Content is returned as a string with proper encoding
+    """
+    try:
+        # Convert GitHub web URL to raw content URL
+        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+        response = requests.get(raw_url)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logger.warning(f"Failed to get content for {path}: {str(e)}")
+        return None
+
+
+def get_github_last_update_time(api: GitHubAPI, owner: str, repo: str, ref: str) -> str:
+    """
+    Gets the last update time for a repository reference.
+
+    This function:
+    - Fetches commit history
+    - Extracts commit date
+    - Handles different date formats
+    - Provides fallback to current year
+
+    Args:
+        api (GitHubAPI): GitHub API client
+        owner (str): Repository owner
+        repo (str): Repository name
+        ref (str): Reference (branch/tag/commit)
+
+    Returns:
+        str: Year of last update
+            Example: "2024"
+    """
+    try:
+        # Get the commit history for the ref
+        commits = api._make_request(f"/repos/{owner}/{repo}/commits", {"sha": ref, "per_page": 1})
+        if commits and len(commits) > 0:
+            # Get the commit date from the first (most recent) commit
+            commit_date = commits[0]["commit"]["author"]["date"]
+            # Extract the year from the date
+            return commit_date.split("-")[0]
+    except Exception as e:
+        logger.warning(f"Failed to get last update time: {str(e)}")
+    return datetime.now().year
