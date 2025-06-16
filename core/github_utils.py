@@ -1,4 +1,5 @@
 
+from datetime import datetime
 import os
 import logging
 from urllib.parse import urlparse
@@ -13,6 +14,7 @@ import json
 import google.generativeai as genai
 
 from core.utils import is_sha_version
+
 
 
 class Kind(Enum):
@@ -555,3 +557,112 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
 
     logger.debug(f"URL is a directory: {repo_url}/{sub_path}")
     return repo_url, sub_path, Kind.DIR
+
+
+def draw_github_file_tree(tree_items: List[Dict], indent: str = "", is_last: bool = True, prefix: str = "") -> List[str]:
+    """
+    Generates a text representation of the repository file tree.
+
+    This function:
+    - Creates a hierarchical tree structure
+    - Uses ASCII characters for tree visualization
+    - Sorts items (directories first, then files)
+    - Handles nested directories
+    - Maintains proper indentation
+
+    Args:
+        tree_items (List[Dict]): List of tree items
+            Each item should have:
+            - path: Full path of the item
+            - type: 'blob' for files, 'tree' for directories
+        indent (str): Current indentation level
+        is_last (bool): Whether this is the last item at current level
+        prefix (str): Prefix for the current level
+
+    Returns:
+        List[str]: List of lines representing the tree structure
+            Example:
+            ├── src/
+            │   ├── main.py
+            │   └── utils.py
+            └── README.md
+    """
+    lines = []
+
+    # Sort items: directories first, then files, both alphabetically
+    sorted_items = sorted(tree_items, key=lambda x: (x.get("type") != "tree", x.get("path", "").lower()))
+
+    for i, item in enumerate(sorted_items):
+        is_last_item = i == len(sorted_items) - 1
+        current_prefix = prefix + ("└── " if is_last_item else "├── ")
+
+        # Get the name from the path
+        path = item.get("path", "")
+        if not path:
+            continue
+
+        # Get just the last part of the path for display
+        name = path.split("/")[-1]
+
+        # Add the current item
+        lines.append(f"{indent}{current_prefix}{name}")
+
+        # If it's a directory, recursively process its contents
+        if item.get("type") == "tree":
+            # Find all items that are children of this directory
+            children = [
+                child for child in tree_items
+                if child.get("path", "").startswith(path + "/")
+                and len(child.get("path", "").split("/")) == len(path.split("/")) + 1
+            ]
+
+            if children:
+                new_prefix = prefix + ("    " if is_last_item else "│   ")
+                new_indent = indent + ("    " if is_last_item else "│   ")
+                subtree = draw_github_file_tree(children, new_indent, is_last_item, new_prefix)
+                lines.extend(subtree)
+
+    return lines
+
+
+def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = "repository_trees.log"):
+    """
+    Saves the repository tree structure to a log file.
+
+    This function:
+    - Generates tree structure using draw_file_tree
+    - Adds metadata (repo URL, version, timestamp)
+    - Appends to existing log file
+    - Handles file encoding and errors
+
+    Args:
+        repo_url (str): Repository URL
+        version (str): Version/branch name
+        tree_items (List[Dict]): Tree structure to save
+        log_file (str): Path to log file
+            Default: "repository_trees.log"
+    """
+    logger.info(f"Saving tree structure for {repo_url} at version {version}")
+
+    # Create the tree structure
+    tree_lines = draw_github_file_tree(tree_items)
+
+    # Format the output
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    output = [
+        f"\n{'='*80}",
+        f"Repository: {repo_url}",
+        f"Version: {version}",
+        f"Timestamp: {timestamp}",
+        f"{'='*80}\n",
+        *tree_lines,
+        "\n"
+    ]
+
+    # Write to file
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write("\n".join(output))
+        logger.debug(f"Tree structure saved to {log_file}")
+    except Exception as e:
+        logger.error(f"Failed to save tree structure: {str(e)}")

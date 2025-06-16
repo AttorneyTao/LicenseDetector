@@ -40,6 +40,7 @@ import google.generativeai as genai
 #=============================================================================
 from core.github_utils import resolve_github_version
 from core.github_utils import parse_github_url
+from core.github_utils import save_github_tree_to_file
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI, find_github_url_from_package_url, resolve_github_version
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
@@ -145,10 +146,7 @@ if USE_LLM:
     genai.configure(api_key=GEMINI_CONFIG["api_key"])
     logger.info(f"Initialized Gemini API with model: {GEMINI_CONFIG['model']}")
 
-class Kind(Enum):
-    REPO = "REPO"
-    DIR = "DIR"
-    FILE = "FILE"
+
 
 
 
@@ -284,113 +282,6 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
     url_logger.info(f"Final results: {results}")
     logger.info(f"Found {len(results)} license files")
     return results
-
-def draw_file_tree(tree_items: List[Dict], indent: str = "", is_last: bool = True, prefix: str = "") -> List[str]:
-    """
-    Generates a text representation of the repository file tree.
-    
-    This function:
-    - Creates a hierarchical tree structure
-    - Uses ASCII characters for tree visualization
-    - Sorts items (directories first, then files)
-    - Handles nested directories
-    - Maintains proper indentation
-    
-    Args:
-        tree_items (List[Dict]): List of tree items
-            Each item should have:
-            - path: Full path of the item
-            - type: 'blob' for files, 'tree' for directories
-        indent (str): Current indentation level
-        is_last (bool): Whether this is the last item at current level
-        prefix (str): Prefix for the current level
-        
-    Returns:
-        List[str]: List of lines representing the tree structure
-            Example:
-            ├── src/
-            │   ├── main.py
-            │   └── utils.py
-            └── README.md
-    """
-    lines = []
-    
-    # Sort items: directories first, then files, both alphabetically
-    sorted_items = sorted(tree_items, key=lambda x: (x.get("type") != "tree", x.get("path", "").lower()))
-    
-    for i, item in enumerate(sorted_items):
-        is_last_item = i == len(sorted_items) - 1
-        current_prefix = prefix + ("└── " if is_last_item else "├── ")
-        
-        # Get the name from the path
-        path = item.get("path", "")
-        if not path:
-            continue
-            
-        # Get just the last part of the path for display
-        name = path.split("/")[-1]
-        
-        # Add the current item
-        lines.append(f"{indent}{current_prefix}{name}")
-        
-        # If it's a directory, recursively process its contents
-        if item.get("type") == "tree":
-            # Find all items that are children of this directory
-            children = [
-                child for child in tree_items 
-                if child.get("path", "").startswith(path + "/") 
-                and len(child.get("path", "").split("/")) == len(path.split("/")) + 1
-            ]
-            
-            if children:
-                new_prefix = prefix + ("    " if is_last_item else "│   ")
-                new_indent = indent + ("    " if is_last_item else "│   ")
-                subtree = draw_file_tree(children, new_indent, is_last_item, new_prefix)
-                lines.extend(subtree)
-    
-    return lines
-
-def save_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = "repository_trees.log"):
-    """
-    Saves the repository tree structure to a log file.
-    
-    This function:
-    - Generates tree structure using draw_file_tree
-    - Adds metadata (repo URL, version, timestamp)
-    - Appends to existing log file
-    - Handles file encoding and errors
-    
-    Args:
-        repo_url (str): Repository URL
-        version (str): Version/branch name
-        tree_items (List[Dict]): Tree structure to save
-        log_file (str): Path to log file
-            Default: "repository_trees.log"
-    """
-    logger.info(f"Saving tree structure for {repo_url} at version {version}")
-    
-    # Create the tree structure
-    tree_lines = draw_file_tree(tree_items)
-    
-    # Format the output
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    output = [
-        f"\n{'='*80}",
-        f"Repository: {repo_url}",
-        f"Version: {version}",
-        f"Timestamp: {timestamp}",
-        f"{'='*80}\n",
-        *tree_lines,
-        "\n"
-    ]
-    
-    # Write to file
-    try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write("\n".join(output))
-        logger.debug(f"Tree structure saved to {log_file}")
-    except Exception as e:
-        logger.error(f"Failed to save tree structure: {str(e)}")
 
 def get_file_content(api: GitHubAPI, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
     """
@@ -904,7 +795,7 @@ def process_repository(
         
         # Step 7: Save tree structure
         substep_logger.info("Step 7/15: Saving tree structure")
-        save_tree_to_file(repo_url, resolved_version, tree)
+        save_github_tree_to_file(repo_url, resolved_version, tree)
         
         # Step 8: Find and analyze README
         substep_logger.info("Step 8/15: Looking for README file")
