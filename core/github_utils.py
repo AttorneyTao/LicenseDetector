@@ -534,6 +534,10 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
         ValueError: If URL is not a valid GitHub URL or has invalid format
     """
     logger.info(f"Parsing GitHub URL: {url}")
+    # 新增：去掉.git后缀
+    if url.endswith(".git"):
+        url = url[:-4]
+        logger.debug(f"Removed .git suffix, new url: {url}")
     parsed = urlparse(url)
     if parsed.netloc != "github.com":
         logger.error(f"Invalid domain: {parsed.netloc}")
