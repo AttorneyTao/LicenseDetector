@@ -15,6 +15,7 @@ dependencies = [
     "google-genai>=1.18.0",
     "pyyaml>=6.0.2",
     "packaging>=25.0",
+    "beautifulsoup4>=4.13.4",
 ]
 
 [build-system]

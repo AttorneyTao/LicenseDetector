@@ -9,6 +9,8 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from .config import GEMINI_CONFIG
 import google.generativeai as genai
+from .utils import analyze_license_content, extract_copyright_info
+from bs4 import BeautifulSoup
 
 import yaml
 load_dotenv()
@@ -151,6 +153,15 @@ def _gemini_choose_version(user_input: Optional[str], versions: List[str], defau
 
     return default
 
+def fetch_npm_readme_simple(pkg_name, version):
+    url = f"https://www.npmjs.com/package/{pkg_name}/v/{version}?activeTab=readme"
+    resp = requests.get(url)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    # 直接提取全部文本
+    text = soup.get_text(separator="\n")
+    # 可选：去掉前后空行
+    return text.strip()
+
 # ---------------------------------------------------------------------------
 # Main processor (public API)
 # ---------------------------------------------------------------------------
@@ -184,8 +195,12 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
         logger.info("Resolved version for %s: %s", pkg_name, resolved_version)
         version_obj = packument.get("versions", {}).get(resolved_version)
         if not version_obj:
-            logger.error(f"Cannot find version object for {resolved_version}")
-            return {"status": "error", "error": f"Version {resolved_version} not found"}
+            logger.warning(f"Cannot find version object for {resolved_version}, fallback to latest version: {default_version}")
+            resolved_version = default_version
+            version_obj = packument.get("versions", {}).get(resolved_version)
+            if not version_obj:
+                logger.error(f"Cannot find version object for latest version {resolved_version}")
+                return {"status": "error", "error": f"Version {resolved_version} not found"}
     else:
         # 单版本对象
         version_obj = packument
@@ -217,7 +232,24 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
     if readme_content:
         logger.info(f"Readme content found for {pkg_name}@{resolved_version}, length={len(readme_content)}")
     else:
-        logger.info(f"No readme found for {pkg_name}@{resolved_version}")
+        logger.info(f"No readme found for {pkg_name}@{resolved_version}, trying to fetch from npm registry...")
+        readme_content = fetch_npm_readme_simple(pkg_name, resolved_version)
+    license_analysis = None
+    readme_license = None
+    if not license_type:
+        logger.info("No license info in npm metadata, analyzing readme for license...")
+        license_analysis = analyze_license_content(readme_content or "")
+        if license_analysis and license_analysis.get("licenses"):
+            license_type = license_analysis["licenses"][0]
+            readme_license = license_analysis["licenses"][0]
+            logger.info(f"Extracted license from readme: {readme_license}")
+        else:
+            license_type = None
+            readme_license = None
+    else:
+        license_analysis = None
+        readme_license = None
+    
 
     last_modified_iso = version_obj.get("time") or version_obj.get("date")
     logger.debug(f"Last modified ISO: {last_modified_iso}")
@@ -237,13 +269,24 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
         author = author_obj
     else:
         author = ""
-    logger.debug(f"Author: {author}")
-
-    copyright_notice = f"Copyright(c) {dt.year} {author}".strip()
+    
+    copyright_notice = extract_copyright_info(readme_content or "")
     logger.debug(f"Copyright notice: {copyright_notice}")
 
+    if not copyright_notice:
+        
+        if not author:
+            author = f"{pkg_name} original author and authors"
+
+        logger.debug(f"Author: {author}")
+
+        copyright_notice = f"Copyright(c) {dt.year} {author}".strip()
+        logger.debug(f"Copyright notice: {copyright_notice}")
+
+        
     license_files = f"https://www.npmjs.com/package/{pkg_name}/v/{resolved_version}?activeTab=code"
     logger.debug(f"License files URL: {license_files}")
+    final_license_file = license_files
 
     # 新增：如果repo_url为github地址，调用process_github_repository补充元数据
     github_fields = {
@@ -319,6 +362,7 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
 
     logger.info("Processing completed for %s@%s", pkg_name, resolved_version)
     logger.debug(f"Result dict: {json.dumps(result, ensure_ascii=False, indent=2)}")
+    return result
 # ---------------------------------------------------------------------------
 # This module exposes only process_npm_repository for programmatic use.
 # ---------------------------------------------------------------------------

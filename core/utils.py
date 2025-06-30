@@ -335,10 +335,10 @@ def extract_copyright_info(content: str) -> Optional[str]:
         llm_logger = logging.getLogger('llm_interaction')
 
         llm_logger.info("Copyright Extraction Request:")
-        llm_logger.info(f"Prompt: {prompt.format(content=content)}")
+        llm_logger.info(f"Prompt: {prompt}")
 
         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = model.generate_content(prompt.format(content=content))
+        response = model.generate_content(prompt)
 
         llm_logger.info("Copyright Extraction Response:")
         llm_logger.info(f"Response: {response.text}")
