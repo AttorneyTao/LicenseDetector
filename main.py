@@ -187,7 +187,8 @@ def main():
             result = process_github_repository(
                 api,
                 row["github_url"],
-                row.get("version")
+                row.get("version"),
+                name=row.get("name", None)
             )
             
             # Extract additional license analysis fields

@@ -742,7 +742,8 @@ def process_github_repository(
     api: GitHubAPI,
     github_url: str,
     version: Optional[str],
-    license_keywords: List[str] = ["license", "licenses", "copying", "notice"]
+    license_keywords: List[str] = ["license", "licenses", "copying", "notice"],
+    name: str = None
 ) -> Dict[str, Any]:
     """
     Processes a GitHub repository to extract license information.
@@ -832,7 +833,53 @@ def process_github_repository(
 
         # Step 3: Get repository info
         substep_logger.info("Step 3/15: Getting repository information")
-        repo_info = api.get_repo_info(owner, repo)
+        try:
+            repo_info = api.get_repo_info(owner, repo)
+        except Exception as e:
+            substep_logger.warning(f"Error getting repo_info for {owner}/{repo}: {e}, will try with repo=name if name is provided.")
+            if name:
+                try:
+                    repo_info = api.get_repo_info(owner, name)
+                    repo = name  # 更新repo变量为name
+                    substep_logger.info(f"Successfully got repo_info with repo=name: {name}")
+                except Exception as e2:
+                    substep_logger.error(f"Failed to get repo_info with repo=name: {name}: {e2}")
+                    return {
+                        "input_url": input_url,
+                        "repo_url": repo_url,
+                        "input_version": version,
+                        "resolved_version": None,
+                        "used_default_branch": False,
+                        "component_name": None,
+                        "license_files": "",
+                        "license_analysis": None,
+                        "license_type": None,
+                        "has_license_conflict": False,
+                        "readme_license": None,
+                        "license_file_license": None,
+                        "copyright_notice": None,
+                        "status": "error",
+                        "license_determination_reason": f"Failed to get repo_info for both {repo} and {name}"
+                    }
+            else:
+                substep_logger.error(f"No alternative repo name provided, cannot retry get_repo_info.")
+                return {
+                    "input_url": input_url,
+                    "repo_url": repo_url,
+                    "input_version": version,
+                    "resolved_version": None,
+                    "used_default_branch": False,
+                    "component_name": None,
+                    "license_files": "",
+                    "license_analysis": None,
+                    "license_type": None,
+                    "has_license_conflict": False,
+                    "readme_license": None,
+                    "license_file_license": None,
+                    "copyright_notice": None,
+                    "status": "error",
+                    "license_determination_reason": f"Failed to get repo_info for {repo}"
+                }
         component_name = repo_info.get("name", repo)
         substep_logger.info(f"Retrieved component name: {component_name}")
 
