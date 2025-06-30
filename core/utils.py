@@ -428,3 +428,9 @@ def construct_copyright_notice(year: str, owner: str, repo: str, ref: str, compo
     return copyright_notice
 
 
+def get_concluded_license(row):
+        for key in ["readme_license", "license_file_license", "license_type"]:
+            val = row.get(key)
+            if val:
+                return val
+        return "unlicensed"

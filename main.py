@@ -38,6 +38,7 @@ import google.generativeai as genai
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
+from core.utils import get_concluded_license
 
 # ============================================================================
 # Load Prompts Section
@@ -222,13 +223,13 @@ def main():
         # Ensure all required columns are present
         required_columns = [
             "input_url", "repo_url", "input_version", "resolved_version", "used_default_branch",
-            "component_name", "license_files", "license_analysis", "license_type",
+            "component_name","concluded_license", "license_files","copyright_notice", "license_analysis", "license_type",
             "has_license_conflict", "readme_license", "license_file_license",
-            "copyright_notice", "status", "license_determination_reason",
+             "status", "license_determination_reason",
             "is_dual_licensed", "dual_license_relationship", "has_third_party_licenses",
             "third_party_license_location"
         ]
-        
+        output_df["concluded_license"] = output_df.apply(get_concluded_license, axis=1)
         # Add any missing columns with None values
         for col in required_columns:
             if col not in output_df.columns:
@@ -236,6 +237,7 @@ def main():
         
         # Reorder columns to ensure consistent output
         output_df = output_df[required_columns]
+
         
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         output_file = f"outputs/output_{timestamp}.xlsx"

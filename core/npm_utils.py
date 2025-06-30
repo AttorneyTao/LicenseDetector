@@ -314,7 +314,7 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
                     resolved_version
                 )
                 # 1. license_files字段替换逻辑
-                if github_result.get("used_default_branch") is False:
+                if github_result.get("used_default_branch") is False and github_result.get("license_files"):
                     final_license_file = github_result.get("license_files", license_files)
                     logger.info("Replaced license_files with GitHub result because used_default_branch is False")
                 else:
