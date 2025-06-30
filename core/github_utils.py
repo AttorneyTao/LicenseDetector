@@ -786,7 +786,7 @@ def process_github_repository(
     if isinstance(github_url, str) and (github_url.startswith("https://www.npmjs.com/") or github_url.startswith("https://registry.npmjs.org/")):
         substep_logger.info(f"Detected npm registry URL: {github_url}, calling process_npm_repository()")
         npm_result = process_npm_repository(github_url, version)
-        if npm_result is not None:
+        if npm_result is not None and npm_result.get("status") != "error":
             return npm_result
         else:
             substep_logger.info("process_npm_repository returned None, continue with GitHub logic.")

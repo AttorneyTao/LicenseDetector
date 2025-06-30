@@ -162,6 +162,13 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
 
     pkg_name = _parse_package_name(url)
     logger.debug(f"Parsed package name: {pkg_name}")
+    try:
+        packument = _fetch_packument(pkg_name, version)
+        logger.debug(f"Fetched packument keys: {list(packument.keys())}")
+    except Exception as e:
+        logger.warning(f"Error fetching packument for {pkg_name}@{version}: {e}, switching to alternative logic.", exc_info=True)
+        # 调用你的备用逻辑
+        return  {"status": "error"}
 
     # 1. 获取元数据
     packument = _fetch_packument(pkg_name, version)
