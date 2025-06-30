@@ -1232,6 +1232,13 @@ def process_github_repository(
         substep_logger.info("Step 15/15: No licenses found in repository")
         determination_reason = "No license files found in repository"
         substep_logger.warning(determination_reason)
+                # 新增逻辑：如果readme_license_analysis有license，license_files用readme的完整url
+        readme_url = ""
+        if readme_path:
+            readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
+        license_files_value = ""
+        if readme_license_analysis and readme_license_analysis.get("licenses"):
+            license_files_value = readme_url
         return {
             "input_url": input_url,
             "repo_url": repo_url,
@@ -1239,7 +1246,7 @@ def process_github_repository(
             "resolved_version": resolved_version,
             "used_default_branch": used_default_branch,
             "component_name": component_name,
-            "license_files": "",
+            "license_files": license_files_value,
             "license_analysis": readme_license_analysis,
             "license_type": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,
             "has_license_conflict": False,
