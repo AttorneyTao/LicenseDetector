@@ -108,6 +108,38 @@ if USE_LLM:
 # - Generates output
 # - Handles errors and cleanup
 
+import asyncio
+from tqdm import tqdm
+
+async def process_all_repos(api, df, max_concurrency=10):
+    logger = logging.getLogger('main')
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def sem_task(row):
+        async with sem:
+            logger.info(f"[ASYNC] 开始处理: {row.get('github_url')} (version: {row.get('version')})")
+            try:
+                result = await process_github_repository(
+                    api,
+                    row["github_url"],
+                    row.get("version"),
+                    name=row.get("name", None)
+                )
+                logger.info(f"[ASYNC] 完成处理: {row.get('github_url')}")
+                return result
+            except Exception as e:
+                logger.error(f"[ASYNC] 处理 {row.get('github_url')} 出错: {e}", exc_info=True)
+                return {"input_url": row.get("github_url"), "status": "error", "error": str(e)}
+
+    logger.info(f"[ASYNC] 并发任务数上限: {max_concurrency}")
+    tasks = [sem_task(row) for idx, row in df.iterrows()]
+    results = []
+    for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="进度"):
+        result = await coro
+        results.append(result)
+    logger.info("[ASYNC] 所有任务已完成")
+    return results
+
 def main():
     """
     Main execution function for the GitHub License Analyzer.
@@ -137,6 +169,7 @@ def main():
     - Manages API rate limits
     - Provides detailed error logging
     """
+    load_dotenv(".env")
     loggers = setup_logging()
     logger = loggers["main"]
     url_logger = loggers["url"]
@@ -151,6 +184,7 @@ def main():
     github_token = os.getenv("GITHUB_TOKEN")
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     logger.info(f"GITHUB_TOKEN present: {'Yes' if github_token else 'No'}")
+    logger.info(f"GITHUB_TOKEN :{github_token[:-20]}... (truncated for security)")
     logger.info(f"GEMINI_API_KEY present: {'Yes' if gemini_api_key else 'No'}")
     
     # Initialize GitHub API
@@ -175,46 +209,8 @@ def main():
         logger.error(f"Failed to read input file: {str(e)}", exc_info=True)
         raise
     
-    # Process each repository
-    results = []
-    logger.info("Step 3: Starting repository processing")
-    for idx, row in tqdm(df.iterrows(), total=len(df), desc="Processing repositories"):
-        logger.info(f"Starting processing of row {idx + 1}/{len(df)}")
-        logger.info(f"Processing URL: {row['github_url']}")
-        logger.info(f"Version: {row.get('version')}")
-        
-        try:
-            # Process each repository
-            result = process_github_repository(
-                api,
-                row["github_url"],
-                row.get("version"),
-                name=row.get("name", None)
-            )
-            
-            # Extract additional license analysis fields
-            if result.get("license_analysis"):
-                result["is_dual_licensed"] = result["license_analysis"].get("is_dual_licensed", False)
-                result["dual_license_relationship"] = result["license_analysis"].get("dual_license_relationship", "none")
-                result["has_third_party_licenses"] = result["license_analysis"].get("has_third_party_licenses", False)
-                result["third_party_license_location"] = result["license_analysis"].get("third_party_license_location", None)
-            
-            results.append(result)
-            logger.info(f"Completed processing row {idx + 1}")
-            
-            # Save intermediate results
-            try:
-                pd.DataFrame(results).to_csv("temp/temp_results.csv", index=False)
-                logger.debug("Saved intermediate results")
-            except Exception as e:
-                logger.error(f"Failed to save intermediate results: {str(e)}", exc_info=True)
-        except Exception as e:
-            logger.error(f"Error processing row {idx + 1}: {str(e)}", exc_info=True)
-            results.append({
-                "input_url": row["github_url"],
-                "error": str(e),
-                "status": "error"
-            })
+    # 并发处理，限制最大并发数为5（可根据需要调整）
+    results = asyncio.run(process_all_repos(api, df, max_concurrency=5))
     
     # Create final output
     try:

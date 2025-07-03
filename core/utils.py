@@ -157,6 +157,54 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
         }
 
 
+async def analyze_license_content_async(content: str) -> Dict[str, Any]:
+    if not USE_LLM:
+        logger.info("LLM analysis is disabled, returning empty analysis")
+        return {
+            "licenses": [],
+            "is_dual_licensed": False,
+            "dual_license_relationship": "none",
+            "license_relationship": "none",
+            "confidence": 0.0,
+            "third_party_license_location": None
+        }
+    try:
+        prompt = PROMPTS["license_analysis"].format(content=content)
+        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+        llm_logger = logging.getLogger('llm_interaction')
+        llm_logger.info("License Analysis Request:")
+        llm_logger.info(f"Prompt: {prompt}")
+        response = await model.generate_content_async(prompt)
+        llm_logger.info(f"License Analysis Response:{response.text}")
+        if response.text:
+            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                if "main_licenses" in result:
+                    result["licenses"] = result.pop("main_licenses")
+                return result
+            else:
+                logger.warning("No JSON found in license analysis response")
+                return {
+                    "licenses": [],
+                    "is_dual_licensed": False,
+                    "dual_license_relationship": "none",
+                    "license_relationship": "none",
+                    "confidence": 0.0,
+                    "third_party_license_location": None
+                }
+    except Exception as e:
+        logger.error(f"Failed to analyze license content: {str(e)}", exc_info=True)
+        return {
+            "licenses": [],
+            "is_dual_licensed": False,
+            "dual_license_relationship": "none",
+            "license_relationship": "none",
+            "confidence": 0.0,
+            "third_party_license_location": None
+        }
+
+
 def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
     """
     Finds license files in a repository tree.
@@ -425,6 +473,60 @@ def construct_copyright_notice(year: str, owner: str, repo: str, ref: str, compo
         copyright_notice = f"Copyright (c) {year} {component_name} original author and authors"
         llm_logger.info(f"Constructed default copyright notice: {copyright_notice}")
 
+    return copyright_notice
+
+
+async def construct_copyright_notice_async(year: str, owner: str, repo: str, ref: str, component_name: str, readme_content: Optional[str] = None, license_content: Optional[str] = None) -> str:
+    """
+    Constructs a copyright notice for a component asynchronously.
+
+    This function:
+    - Extracts existing copyright notices
+    - Falls back to repository metadata
+    - Uses LLM for analysis if available
+    - Constructs default notice if needed
+
+    Args:
+        year (str): Year of copyright
+        owner (str): Repository owner
+        repo (str): Repository name
+        ref (str): Reference (branch/tag/commit)
+        component_name (str): Name of the component
+        readme_content (Optional[str]): README content
+        license_content (Optional[str]): License content
+
+    Returns:
+        str: Constructed copyright notice
+            Example: "Copyright (c) 2024 Component Name original author and authors"
+    """
+    copyright_notice = None
+    combined_content = ""
+    if readme_content:
+        combined_content += readme_content + "\n\n"
+    if license_content:
+        combined_content += license_content
+    llm_logger = logging.getLogger('llm_interaction')
+    if combined_content:
+        try:
+            prompt = PROMPTS["copyright_analysis"].format(combined_content=combined_content)
+            llm_logger.info("Copyright Notice Construction Request:")
+            llm_logger.info(f"Prompt: {prompt}")
+            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+            response = await model.generate_content_async(prompt)
+            llm_logger.info("Copyright Notice Construction Response:")
+            llm_logger.info(f"Response: {response.text}")
+            if response.text:
+                text = response.text.strip()
+                if text and text.lower() != "none":
+                    copyright_notice = text
+                    llm_logger.info(f"Found copyright notice via LLM: {copyright_notice}")
+                else:
+                    llm_logger.info("No copyright notice found in LLM response")
+        except Exception as e:
+            llm_logger.error(f"Error using LLM for copyright analysis: {str(e)}", exc_info=True)
+    if not copyright_notice:
+        copyright_notice = f"Copyright (c) {year} {component_name} original author and authors"
+        llm_logger.info(f"Constructed default copyright notice: {copyright_notice}")
     return copyright_notice
 
 

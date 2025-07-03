@@ -1,4 +1,3 @@
-
 from datetime import datetime
 import os
 import logging
@@ -14,7 +13,7 @@ import json
 import google.generativeai as genai
 
 from core.npm_utils import process_npm_repository
-from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, is_sha_version
+from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
 
 
 
@@ -738,7 +737,7 @@ def get_github_last_update_time(api: GitHubAPI, owner: str, repo: str, ref: str)
     return datetime.now().year
 
 
-def process_github_repository(
+async def process_github_repository(
     api: GitHubAPI,
     github_url: str,
     version: Optional[str],
@@ -786,7 +785,7 @@ def process_github_repository(
     substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
     if isinstance(github_url, str) and (github_url.startswith("https://www.npmjs.com/") or github_url.startswith("https://registry.npmjs.org/")):
         substep_logger.info(f"Detected npm registry URL: {github_url}, calling process_npm_repository()")
-        npm_result = process_npm_repository(github_url, version)
+        npm_result = await process_npm_repository(github_url, version)
         if npm_result is not None and npm_result.get("status") != "error":
             return npm_result
         else:
@@ -901,7 +900,7 @@ def process_github_repository(
                 license_content = license_info.get("content", "")
                 if license_content:
                     substep_logger.info("Analyzing license content")
-                    license_file_analysis = analyze_license_content(license_content)
+                    license_file_analysis = await analyze_license_content_async(license_content)
 
                     # Use the html_url from _links if available
                     license_url = license_info.get("_links", {}).get("html")
@@ -931,7 +930,7 @@ def process_github_repository(
                         "has_license_conflict": False,
                         "readme_license": None,
                         "license_file_license": license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None,
-                        "copyright_notice": construct_copyright_notice(get_github_last_update_time(api,owner,repo,resolved_version), owner, repo, resolved_version, component_name, None, license_content),
+                        "copyright_notice": await construct_copyright_notice_async(get_github_last_update_time(api,owner,repo,resolved_version), owner, repo, resolved_version, component_name, None, license_content),
                         "status": "success",
                         "license_determination_reason": "License found through GitHub API"
                     }
@@ -999,7 +998,7 @@ def process_github_repository(
             readme_content = get_file_content(api, owner, repo, readme_path, resolved_version)
             if readme_content:
                 substep_logger.info("Analyzing README content for license information")
-                readme_license_analysis = analyze_license_content(readme_content)
+                readme_license_analysis = await analyze_license_content_async(readme_content)
                 if readme_license_analysis["licenses"]:
                     substep_logger.info(f"Found license information in README: {readme_license_analysis}")
 
@@ -1023,7 +1022,7 @@ def process_github_repository(
 
         # Step 11: Get copyright notice
         substep_logger.info("Step 11/15: Constructing copyright notice")
-        copyright_notice = construct_copyright_notice(
+        copyright_notice = await construct_copyright_notice_async(
             get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
             readme_content, license_content
         )
@@ -1043,7 +1042,7 @@ def process_github_repository(
                 for license_file in license_files:
                     license_content = get_file_content(api, owner, repo, license_file.split("/")[-1], resolved_version)
                     if license_content:
-                        license_file_analysis = analyze_license_content(license_content)
+                        license_file_analysis = await analyze_license_content_async(license_content)
                         if license_file_analysis["licenses"]:
                             break
 
@@ -1110,7 +1109,7 @@ def process_github_repository(
                     substep_logger.info("Analyzing repo-level license content")
                     license_content = get_file_content(api, owner, repo, "LICENSE", resolved_version)
                     if license_content:
-                        license_file_analysis = analyze_license_content(license_content)
+                        license_file_analysis = await analyze_license_content_async(license_content)
 
                 # Check for license conflicts
                 license_conflict = False
@@ -1176,7 +1175,7 @@ def process_github_repository(
                     for license_file in license_files:
                         license_content = get_file_content(api, owner, repo, license_file.split("/")[-1], resolved_version)
                         if license_content:
-                            license_file_analysis = analyze_license_content(license_content)
+                            license_file_analysis = await analyze_license_content_async(license_content)
                             if license_file_analysis["licenses"]:
                                 break
 

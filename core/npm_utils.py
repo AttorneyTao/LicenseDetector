@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from .config import GEMINI_CONFIG
 import google.generativeai as genai
-from .utils import analyze_license_content, extract_copyright_info
+from .utils import analyze_license_content, extract_copyright_info, analyze_license_content_async
 from bs4 import BeautifulSoup
 
 import yaml
@@ -166,7 +166,7 @@ def fetch_npm_readme_simple(pkg_name, version):
 # Main processor (public API)
 # ---------------------------------------------------------------------------
 
-def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str, Any]:
+async def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str, Any]:
     logger = logging.getLogger("main")
 
     logger.info("Starting processing for %s (requested version=%s)", url, version)
@@ -238,7 +238,7 @@ def process_npm_repository(url: str, version: Optional[str] = None) -> Dict[str,
     readme_license = None
     if not license_type:
         logger.info("No license info in npm metadata, analyzing readme for license...")
-        license_analysis = analyze_license_content(readme_content or "")
+        license_analysis = await analyze_license_content_async(readme_content or "")
         if license_analysis and license_analysis.get("licenses"):
             license_type = license_analysis["licenses"][0]
             readme_license = license_analysis["licenses"][0]
