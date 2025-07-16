@@ -210,7 +210,7 @@ def main():
         raise
     
     # 并发处理，限制最大并发数为5（可根据需要调整）
-    results = asyncio.run(process_all_repos(api, df, max_concurrency=5))
+    results = asyncio.run(process_all_repos(api, df, max_concurrency=10))
     
     # Create final output
     try:

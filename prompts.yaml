@@ -53,6 +53,7 @@ copyright_extract: |
   If found, return the exact copyright notice.
   If not found, return null.
   terms like "Copyright [yyyy] [name of copyright owner]" is a template, not a real copyright notice.
+  and you should pay attention to distinguish between real copyright notices and those copyright of the license text.
   Do not include any other information or explanation.
   Text:
   {content}

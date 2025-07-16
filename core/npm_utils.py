@@ -308,8 +308,8 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
             if len(path_parts) >= 2:
                 github_url = f"https://github.com/{path_parts[0]}/{path_parts[1]}"
                 api = GitHubAPI()
-                github_result = process_github_repository(
-                    None,  # 你的实现可能需要api对象，这里按需传递
+                github_result = await process_github_repository(
+                    api,  # 你的实现可能需要api对象，这里按需传递
                     github_url,
                     resolved_version
                 )
