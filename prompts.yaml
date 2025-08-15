@@ -66,6 +66,8 @@ copyright_extract: |
 copyright_analysis: |
  Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
  terms like "Copyright [yyyy] [name of copyright owner]" is a template, not a real copyright notice, you should not return it.
+ terms like "Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>" "Copyright (C) 1989, 1991 Free Software Foundation, Inc. <https://fsf.org/>" are the copyright notice of the license text, not 
+ the copyright notice of the software. You should not return it either.
 
   Text to analyze:
   {combined_content}

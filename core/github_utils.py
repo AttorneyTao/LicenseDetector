@@ -13,6 +13,7 @@ import json
 import google.generativeai as genai
 
 from core.npm_utils import process_npm_repository
+from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
 
 
@@ -790,6 +791,15 @@ async def process_github_repository(
             return npm_result
         else:
             substep_logger.info("process_npm_repository returned None, continue with GitHub logic.")
+
+    # 添加 PyPI URL 判断和处理
+    if isinstance(github_url, str) and github_url.startswith("https://pypi.org/"):
+        substep_logger.info(f"Detected PyPI registry URL: {github_url}, calling process_pypi_repository()")
+        pypi_result = await process_pypi_repository(github_url, version)
+        if pypi_result is not None and pypi_result.get("status") != "error":
+            return pypi_result
+        else:
+            substep_logger.info("process_pypi_repository returned None, continue with GitHub logic.")
 
     substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
     try:
