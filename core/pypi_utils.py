@@ -4,10 +4,16 @@ import json
 import time
 import logging
 import requests
+import yaml
+import google.generativeai as genai
+from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib3.exceptions import InsecureRequestWarning
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
+from .utils import extract_copyright_info  # 添加这行导入
+from .config import GEMINI_CONFIG, SCORE_THRESHOLD  # 修改导入
 
 # 日志设置
 logger = logging.getLogger('main')
@@ -15,11 +21,15 @@ llm_logger = logging.getLogger('llm_interaction')
 
 def _parse_package_name(url: str) -> str:
     """从 PyPI URL 中提取包名"""
-    path = urlparse(url).path
-    parts = [p for p in path.split('/') if p]
-    if len(parts) >= 2 and parts[0] == "project":
-        return parts[1]
-    return parts[0] if parts else ""
+    try:
+        parsed = urlparse(url)
+        parts = [p for p in parsed.path.split('/') if p]
+        if len(parts) >= 2 and parts[0] == "project":
+            return parts[1].strip('/')  # 移除尾部斜杠
+        return parts[0].strip('/') if parts else ""
+    except Exception as e:
+        logger.error(f"Failed to parse package name from URL {url}: {str(e)}")
+        return ""
 
 class PyPIAPIError(Exception):
     """PyPI API 调用异常"""
@@ -83,6 +93,78 @@ def _fetch_pypi_metadata(package_name: str, max_retries: int = 3) -> Dict[str, A
             logger.warning(f"Request failed (attempt {attempt + 1}): {str(e)}, retrying...")
             time.sleep(attempt * 2)
 
+async def _standardize_license(license_info: Dict[str, Any]) -> str:
+    """
+    使用多级判断逻辑标准化 license 信息
+    Args:
+        license_info: 包含 license 相关信息的字典
+    Returns:
+        标准化的 SPDX 标识符
+    """
+    try:
+        # 1. 首先检查 license_expression
+        if license_info.get("license_expression"):
+            return license_info["license_expression"]
+            
+        # 2. 检查 classifiers 中的 license 信息
+        classifiers = license_info.get("classifiers", [])
+        for classifier in classifiers:
+            if classifier.startswith("License :: OSI Approved :: "):
+                # 移除前缀并进行简单转换
+                license_name = classifier.replace("License :: OSI Approved :: ", "")
+                if "MIT" in license_name:
+                    return "MIT"
+                elif "Apache" in license_name:
+                    return "Apache-2.0"
+                elif "BSD" in license_name:
+                    if "3" in license_name:
+                        return "BSD-3-Clause"
+                    return "BSD-2-Clause"
+                    
+        # 3. 检查基本的 license 字段
+        raw_license = license_info.get("license")
+        if raw_license:
+            # 如果存在原始 license 文本，使用 LLM 进行分析
+            try:
+                # 读取提示词
+                with open("prompts.yaml", 'r', encoding='utf-8') as f:
+                    prompts = yaml.safe_load(f)
+                
+                # 初始化 Gemini
+                genai.configure(api_key=GEMINI_CONFIG["api_key"])
+                model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+                
+                # 准备提示词
+                prompt = prompts["license_standardize"].format(
+                    license_string=raw_license
+                )
+                
+                # 调用模型
+                response = model.generate_content(prompt)
+                logger.debug(f"LLM raw response: {response.text}")
+                
+                # 清理并解析响应
+                cleaned_response = response.text.strip()
+                if cleaned_response.startswith("```"):
+                    cleaned_response = "\n".join(cleaned_response.split("\n")[1:-1])
+                    
+                result = json.loads(cleaned_response)
+                
+                # 检查置信度
+                confidence_threshold = SCORE_THRESHOLD / 100.0
+                if result.get("confidence", 0) >= confidence_threshold:
+                    return result["spdx_identifier"]
+                    
+            except Exception as e:
+                logger.error(f"LLM analysis failed: {str(e)}")
+                
+        # 4. 如果所有方法都失败，返回 UNKNOWN
+        return "UNKNOWN"
+        
+    except Exception as e:
+        logger.error(f"Failed to standardize license info: {str(e)}")
+        return "UNKNOWN"
+
 async def process_pypi_repository(url: str, version: Optional[str] = None) -> Dict[str, Any]:
     """处理 PyPI 仓库信息"""
     logger.info(f"Starting PyPI repository processing: {url}")
@@ -90,12 +172,21 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
     try:
         # 1. 解析包名
         package_name = _parse_package_name(url)
+        logger.info(f"Parsed package name: {package_name}")
+        
         if not package_name:
-            return {"status": "error", "error": "Invalid PyPI URL", "input_url": url}
+            logger.error(f"Could not parse package name from URL: {url}")
+            return {
+                "status": "error", 
+                "error": "Invalid PyPI URL", 
+                "input_url": url
+            }
         
         # 2. 获取元数据
         try:
             metadata = _fetch_pypi_metadata(package_name)
+            logger.info(f"Successfully fetched metadata for {package_name}")
+            logger.debug(f"Raw PyPI metadata: {json.dumps(metadata, indent=2)}")  # 添加这行
         except PyPIAPIError as e:
             logger.error(f"PyPI API error for {package_name}: {str(e)}")
             return {
@@ -118,7 +209,7 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
         
         # 5. 基本信息提取
         info = metadata["info"]
-        license_type = info.get("license") or "Unknown"
+        license_type = await _standardize_license(info)  # 传入完整的 info 字典
         readme_content = info.get("description", "")
         
         # 6. 源码仓库 URL 处理

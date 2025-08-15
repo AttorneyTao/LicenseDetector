@@ -84,3 +84,31 @@ github_url_finder: |
         
         Only return a GitHub URL if you are confident it is the correct repository.
         If you are not sure, return null.
+
+license_standardize: |
+  Convert the following license string to a standard SPDX identifier.
+  Only return one SPDX identifier that best matches the input.
+  If you're not sure, return "UNKNOWN".
+  
+  License string: {license_string}
+  
+  Return in JSON format:
+  {{
+      "spdx_identifier": "standard SPDX identifier",
+      "confidence": 0.0-1.0
+  }}
+  
+  Common SPDX identifiers for reference:
+  - Apache-2.0
+  - MIT
+  - GPL-2.0-only
+  - GPL-3.0-or-later
+  - LGPL-2.1-only
+  - LGPL-3.0-only
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - MPL-2.0
+  - AGPL-3.0-only
+  when there are multiple licenses, you should determine the relaitonship and compose a spdx license
+  expression like Apache-2.0 AND (MIT OR BSD-3-Clause) OR GPL-2.0-only WITH ClasspathException.

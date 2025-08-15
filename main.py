@@ -114,31 +114,82 @@ from tqdm import tqdm
 async def process_all_repos(api, df, max_concurrency=10):
     logger = logging.getLogger('main')
     sem = asyncio.Semaphore(max_concurrency)
+    results = {}
+    last_save_time = time.time()  # 记录上次保存时间
+    SAVE_INTERVAL = 30  # 每30秒保存一次临时文件
 
-    async def sem_task(row):
-        async with sem:
-            logger.info(f"[ASYNC] 开始处理: {row.get('github_url')} (version: {row.get('version')})")
-            try:
-                result = await process_github_repository(
-                    api,
-                    row["github_url"],
-                    row.get("version"),
-                    name=row.get("name", None)
-                )
-                logger.info(f"[ASYNC] 完成处理: {row.get('github_url')}")
-                return result
-            except Exception as e:
-                logger.error(f"[ASYNC] 处理 {row.get('github_url')} 出错: {e}", exc_info=True)
-                return {"input_url": row.get("github_url"), "status": "error", "error": str(e)}
+    async def save_temp_results():
+        """保存当前已处理的结果到临时文件"""
+        try:
+            # 只保存已完成的结果
+            current_results = [results[i] for i in range(len(df)) if i in results]
+            temp_df = pd.DataFrame(current_results)
+            
+            # 使用固定文件名，这样总是覆盖最新的临时结果
+            temp_file = "temp/temp_results_latest.csv"
+            os.makedirs("temp", exist_ok=True)
+            temp_df.to_csv(temp_file, index=False, encoding='utf-8')
+            
+            # 同时保存一个带时间戳的备份
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_file = f"temp/temp_results_{timestamp}.csv"
+            temp_df.to_csv(backup_file, index=False, encoding='utf-8')
+            
+            logger.info(f"已保存中间结果，完成度: {len(current_results)}/{len(df)}")
+        except Exception as e:
+            logger.error(f"保存临时文件失败: {str(e)}", exc_info=True)
+
+    async def process_with_progress(pbar):
+        nonlocal last_save_time
+
+        async def sem_task(row, index):
+            nonlocal last_save_time
+            async with sem:
+                try:
+                    result = await process_github_repository(
+                        api,
+                        row["github_url"],
+                        row.get("version"),
+                        name=row.get("name", None)
+                    )
+                    results[index] = result
+                except Exception as e:
+                    logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
+                    results[index] = {
+                        "input_url": row.get("github_url"), 
+                        "status": "error", 
+                        "error": str(e)
+                    }
+                
+                # 更新进度条
+                pbar.update(1)
+                
+                # 检查是否需要保存临时文件
+                current_time = time.time()
+                if current_time - last_save_time >= SAVE_INTERVAL:
+                    await save_temp_results()
+                    last_save_time = current_time
+
+        tasks = [sem_task(row, idx) for idx, row in df.iterrows()]
+        await asyncio.gather(*tasks)
 
     logger.info(f"[ASYNC] 并发任务数上限: {max_concurrency}")
-    tasks = [sem_task(row) for idx, row in df.iterrows()]
-    results = []
-    for coro in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="进度"):
-        result = await coro
-        results.append(result)
-    logger.info("[ASYNC] 所有任务已完成")
-    return results
+    
+    try:
+        with tqdm(total=len(df), desc="处理进度") as pbar:
+            await process_with_progress(pbar)
+    except Exception as e:
+        logger.error(f"处理过程中发生错误: {str(e)}", exc_info=True)
+        # 发生错误时也保存临时结果
+        await save_temp_results()
+        raise
+    finally:
+        # 确保在任何情况下都保存最终结果
+        await save_temp_results()
+
+    # 返回所有结果（按原始顺序）
+    ordered_results = [results[i] for i in range(len(df)) if i in results]
+    return ordered_results
 
 def main():
     """
@@ -260,5 +311,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
 
