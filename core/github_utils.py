@@ -784,7 +784,11 @@ async def process_github_repository(
     substep_logger = logging.getLogger('substep')
     url_logger = logging.getLogger('url')
     substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
-    if isinstance(github_url, str) and (github_url.startswith("https://www.npmjs.com/") or github_url.startswith("https://registry.npmjs.org/")):
+    if isinstance(github_url, str) and (github_url.startswith("https://www.npmjs.com/") or 
+    github_url.startswith("https://registry.npmjs.org/") or 
+    github_url.startswith("https://registry.npmmirror.com/") or
+    (github_url.startswith("https://mirrors.tencent.com/npm/") and ("/-/" in github_url or "/package/" in github_url))
+):
         substep_logger.info(f"Detected npm registry URL: {github_url}, calling process_npm_repository()")
         npm_result = await process_npm_repository(github_url, version)
         if npm_result is not None and npm_result.get("status") != "error":
