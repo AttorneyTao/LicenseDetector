@@ -37,7 +37,7 @@ import google.generativeai as genai
 #=============================================================================
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
-from core.config import GEMINI_CONFIG, SCORE_THRESHOLD
+from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY
 from core.utils import get_concluded_license
 
 # ============================================================================
@@ -111,13 +111,16 @@ if USE_LLM:
 import asyncio
 from tqdm import tqdm
 
-async def process_all_repos(api, df, max_concurrency=10):
+async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
     logger = logging.getLogger('main')
     sem = asyncio.Semaphore(max_concurrency)
     results = {}
-    last_save_time = time.time()  # 记录上次保存时间
+    last_save_time = time.time()
     SAVE_INTERVAL = 30  # 每30秒保存一次临时文件
-
+    
+    # 添加一个计数器来跟踪当前运行的任务数
+    running_tasks = 0
+    
     async def save_temp_results():
         """保存当前已处理的结果到临时文件"""
         try:
@@ -140,12 +143,15 @@ async def process_all_repos(api, df, max_concurrency=10):
             logger.error(f"保存临时文件失败: {str(e)}", exc_info=True)
 
     async def process_with_progress(pbar):
-        nonlocal last_save_time
+        nonlocal last_save_time, running_tasks
 
         async def sem_task(row, index):
-            nonlocal last_save_time
+            nonlocal last_save_time, running_tasks
             async with sem:
                 try:
+                    running_tasks += 1
+                    logger.info(f"当前并发任务数: {running_tasks}")
+                    
                     result = await process_github_repository(
                         api,
                         row["github_url"],
@@ -160,6 +166,9 @@ async def process_all_repos(api, df, max_concurrency=10):
                         "status": "error", 
                         "error": str(e)
                     }
+                finally:
+                    running_tasks -= 1
+                    logger.info(f"任务完成，当前并发任务数: {running_tasks}")
                 
                 # 更新进度条
                 pbar.update(1)
@@ -261,7 +270,7 @@ def main():
         raise
     
     # 并发处理，限制最大并发数为5（可根据需要调整）
-    results = asyncio.run(process_all_repos(api, df, max_concurrency=10))
+    results = asyncio.run(process_all_repos(api, df))
     
     # Create final output
     try:

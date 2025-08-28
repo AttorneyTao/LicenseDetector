@@ -8,3 +8,6 @@ GEMINI_CONFIG = {
 }
 
 SCORE_THRESHOLD = 65
+
+# 添加最大并发数配置
+MAX_CONCURRENCY = 10

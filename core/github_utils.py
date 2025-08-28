@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 import re
 import json
 import google.generativeai as genai
+import httpx  # 新增：导入 httpx
+import asyncio  # 新增：导入 asyncio
+from httpx import AsyncClient
+import aiofiles
 
 from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
@@ -147,6 +151,47 @@ class GitHubAPI:
             logger.debug(f"Request successful. Status code: {response.status_code}")
             return response.json()
 
+    async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
+        """
+        异步请求处理，包含速率限制处理
+        """
+        url = f"{self.BASE_URL}{endpoint}"
+        logger.debug(f"Making request to: {url}")
+        if params:
+            logger.debug(f"Request parameters: {params}")
+        
+        async with AsyncClient() as client:
+            while True:
+                try:
+                    response = await client.get(
+                        url, 
+                        params=params,
+                        headers=self.headers
+                    )
+                    
+                    # 检查速率限制
+                    if response.status_code == 403 and "rate limit" in response.text.lower():
+                        # 从响应头获取重置时间
+                        reset_time = int(response.headers.get("X-RateLimit-Reset", 0))
+                        wait_time = max(reset_time - time.time(), 0) + 1
+                        logger.warning(f"Rate limited. Waiting {wait_time:.0f} seconds...")
+                        
+                        # 使用异步睡眠
+                        await asyncio.sleep(wait_time)
+                        continue
+                        
+                    response.raise_for_status()
+                    return response.json()
+                    
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 403 and "rate limit" in e.response.text.lower():
+                        reset_time = int(e.response.headers.get("X-RateLimit-Reset", 0))
+                        wait_time = max(reset_time - time.time(), 0) + 1
+                        logger.warning(f"Rate limited. Waiting {wait_time:.0f} seconds...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    raise
+
     def get_repo_info(self, owner: str, repo: str) -> Dict:
         """
         Retrieves detailed information about a GitHub repository.
@@ -176,6 +221,13 @@ class GitHubAPI:
         logger.info(f"Fetching repository info for {owner}/{repo}")
         return self._make_request(f"/repos/{owner}/{repo}")
 
+    async def get_repo_info(self, owner: str, repo: str) -> Dict:
+        """
+        异步获取仓库信息
+        """
+        logger.info(f"Fetching repository info for {owner}/{repo}")
+        return await self._make_request(f"/repos/{owner}/{repo}")
+
     def get_branches(self, owner: str, repo: str) -> List[Dict]:
         """
         Retrieves all branches for a repository.
@@ -199,6 +251,10 @@ class GitHubAPI:
         """
         logger.info(f"Fetching branches for {owner}/{repo}")
         return self._make_request(f"/repos/{owner}/{repo}/branches")
+
+    async def get_branches(self, owner: str, repo: str) -> List[Dict]:
+        logger.info(f"Fetching branches for {owner}/{repo}")
+        return await self._make_request(f"/repos/{owner}/{repo}/branches")
 
     def get_tags(self, owner: str, repo: str) -> List[Dict]:
         """
@@ -224,7 +280,8 @@ class GitHubAPI:
         logger.info(f"Fetching tags for {owner}/{repo} (with pagination)")
         tags = []
         page = 1
-        per_page = 100  # GitHub API max per_page is 100
+        per_page = 100
+        
         while True:
             response = self._make_request(
                 f"/repos/{owner}/{repo}/tags",
@@ -234,6 +291,31 @@ class GitHubAPI:
                 break
             if isinstance(response, dict):
                 # Defensive: sometimes API returns dict with 'message' on error
+                logger.warning(f"Unexpected response format when fetching tags: {response}")
+                break
+            tags.extend(response)
+            if len(response) < per_page:
+                break
+            page += 1
+        return tags
+
+    async def get_tags(self, owner: str, repo: str) -> List[Dict]:
+        """
+        异步获取所有 tags
+        """
+        logger.info(f"Fetching tags for {owner}/{repo} (with pagination)")
+        tags = []
+        page = 1
+        per_page = 100
+        
+        while True:
+            response = await self._make_request(
+                f"/repos/{owner}/{repo}/tags",
+                params={"per_page": per_page, "page": page}
+            )
+            if not response:
+                break
+            if isinstance(response, dict):
                 logger.warning(f"Unexpected response format when fetching tags: {response}")
                 break
             tags.extend(response)
@@ -272,6 +354,10 @@ class GitHubAPI:
         """
         logger.info(f"Fetching tree for {owner}/{repo} at {sha}")
         return self._make_request(f"/repos/{owner}/{repo}/git/trees/{sha}", {"recursive": "1"})
+
+    async def get_tree(self, owner: str, repo: str, sha: str) -> Dict:
+        logger.info(f"Fetching tree for {owner}/{repo} at {sha}")
+        return await self._make_request(f"/repos/{owner}/{repo}/git/trees/{sha}", {"recursive": "1"})
 
     def get_license(self, owner: str, repo: str, ref: Optional[str] = None) -> Optional[Dict]:
         """
@@ -322,9 +408,17 @@ class GitHubAPI:
                 return None
             logger.error(f"Error fetching license: {str(e)}")
             raise
-
-
-
+    async def get_license(self, owner: str, repo: str, ref: Optional[str] = None) -> Optional[Dict]:
+        logger.info(f"Fetching license info for {owner}/{repo} at ref: {ref}")
+        try:
+            params = {"ref": ref} if ref else None
+            return await self._make_request(f"/repos/{owner}/{repo}/license", params=params)
+        except Exception as e:
+            if getattr(e, 'response', None) and e.response.status_code == 404:
+                logger.warning(f"No license found for {owner}/{repo}")
+                return None
+            logger.error(f"Error fetching license: {str(e)}")
+            raise
 
 def find_github_url_from_package_url(package_url: str) -> Optional[str]:
     """
@@ -396,7 +490,7 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
     return None
 
 
-def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
+async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
     """
     First try text matching, fallback to Gemini LLM if no match.
     Supports "0.x" style ranges, "v" prefix, and case-insensitive matching.
@@ -404,19 +498,19 @@ def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optio
     version_resolve_logger = logging.getLogger('version_resolve')
     version_resolve_logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
 
-        # 新增：如果version是SHA，直接返回
+    # 新增：如果version是SHA，直接返回
     if version and is_sha_version(version):
         version_resolve_logger.info(f"Version {version} detected as SHA, using directly.")
         return version, False
 
     # Get default branch
-    repo_info = api.get_repo_info(owner, repo)
+    repo_info = await api.get_repo_info(owner, repo)  # 添加 await
     default_branch = repo_info["default_branch"]
     version_resolve_logger.info(f"Repository default branch: {default_branch}")
 
     # Get all branches and tags
-    branches = api.get_branches(owner, repo)
-    tags = api.get_tags(owner, repo)
+    branches = await api.get_branches(owner, repo)  # 添加 await
+    tags = await api.get_tags(owner, repo)  # 添加 await，并确保 get_tags 也是异步的
     candidate_versions = [b["name"] for b in branches] + [t["name"] for t in tags]
     version_resolve_logger.info(f"Candidate versions: {candidate_versions}")
 
@@ -630,7 +724,7 @@ def draw_github_file_tree(tree_items: List[Dict], indent: str = "", is_last: boo
     return lines
 
 
-def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = r"logs/repository_trees.log"):
+async def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict], log_file: str = r"logs/repository_trees.log"):
     """
     Saves the repository tree structure to a log file.
 
@@ -666,8 +760,8 @@ def save_github_tree_to_file(repo_url: str, version: str, tree_items: List[Dict]
 
     # Write to file
     try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write("\n".join(output))
+        async with aiofiles.open(log_file, "a", encoding="utf-8") as f:
+            await f.write("\n".join(output))
         logger.debug(f"Tree structure saved to {log_file}")
     except Exception as e:
         logger.error(f"Failed to save tree structure: {str(e)}")
@@ -703,6 +797,13 @@ def get_file_content(api: GitHubAPI, owner: str, repo: str, path: str, ref: str)
     except Exception as e:
         logger.warning(f"Failed to get content for {path}: {str(e)}")
         return None
+
+
+async def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
+    async with AsyncClient() as client:
+        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+        response = await client.get(raw_url)
+        return response.text
 
 
 def get_github_last_update_time(api: GitHubAPI, owner: str, repo: str, ref: str) -> str:
@@ -843,13 +944,13 @@ async def process_github_repository(
         # Step 3: Get repository info
         substep_logger.info("Step 3/15: Getting repository information")
         try:
-            repo_info = api.get_repo_info(owner, repo)
+            repo_info = await api.get_repo_info(owner, repo)
         except Exception as e:
             substep_logger.warning(f"Error getting repo_info for {owner}/{repo}: {e}, will try with repo=name if name is provided.")
             if name:
                 try:
-                    repo_info = api.get_repo_info(owner, name)
-                    repo = name  # 更新repo变量为name
+                    repo_info = await api.get_repo_info(owner, name)
+                    repo = name
                     substep_logger.info(f"Successfully got repo_info with repo=name: {name}")
                 except Exception as e2:
                     substep_logger.error(f"Failed to get repo_info with repo=name: {name}: {e2}")
@@ -894,13 +995,14 @@ async def process_github_repository(
 
         # Step 4: Resolve version
         substep_logger.info("Step 4/15: Resolving version")
-        resolved_version, used_default_branch = resolve_github_version(api, owner, repo, version)
-        substep_logger.info(f"Resolved version to: {resolved_version}, used_default_branch: {used_default_branch}")
+        substep_logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
+        resolved_version, used_default_branch = await resolve_github_version(api, owner, repo, version)  # 添加 await
+        substep_logger.info(f"Resolved version: {resolved_version} (used_default_branch: {used_default_branch})")
 
         # Step 5: Try to get license directly from GitHub API
         substep_logger.info("Step 5/15: Checking for license through GitHub API")
         try:
-            license_info = api.get_license(owner, repo, ref=resolved_version)
+            license_info = await api.get_license(owner, repo, ref=resolved_version)
             if license_info:
                 substep_logger.info("Found license through GitHub API")
                 url_logger.info("Found license through GitHub API")
@@ -958,7 +1060,7 @@ async def process_github_repository(
 
         # Get tree using the resolved version
         substep_logger.info("Getting repository tree")
-        tree_response = api.get_tree(owner, repo, resolved_version)
+        tree_response = await api.get_tree(owner, repo, resolved_version)
         if not isinstance(tree_response, dict):
             substep_logger.error(f"Invalid tree response: {tree_response}")
             return {
@@ -1107,7 +1209,7 @@ async def process_github_repository(
         # Step 13: Try repo-level license
         substep_logger.info("Step 13/15: Trying repo-level license")
         try:
-            license_info = api.get_license(owner, repo, ref=resolved_version)
+            license_info = await api.get_license(owner, repo, ref=resolved_version)
             if license_info:
                 license_type = license_info.get("license", {}).get("spdx_id")
                 determination_reason = f"License determined via GitHub API: {license_type}"
@@ -1280,3 +1382,8 @@ async def process_github_repository(
             "status": "error",
             "license_determination_reason": f"Error: {error_msg}"
         }
+
+
+async def analyze_with_llm(prompts: List[str]) -> List[Dict]:
+    tasks = [model.generate_content_async(prompt) for prompt in prompts]
+    return await asyncio.gather(*tasks)
