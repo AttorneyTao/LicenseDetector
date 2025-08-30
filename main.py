@@ -37,7 +37,7 @@ import google.generativeai as genai
 #=============================================================================
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
-from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY
+from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license
 
 # ============================================================================
@@ -200,118 +200,88 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
     ordered_results = [results[i] for i in range(len(df)) if i in results]
     return ordered_results
 
-def main():
-    """
-    Main execution function for the GitHub License Analyzer.
-    
-    This function implements the complete workflow:
-    1. Environment and API initialization
-    2. Input file processing
-    3. Repository analysis
-    4. Results compilation
-    5. Output generation
-    6. Error handling
-    7. Cleanup
-    
-    The function expects:
-    - input.xlsx: Excel file with GitHub URLs and optional versions
-    - .env file: Environment variables for API keys
-    
-    It produces:
-    - output_{timestamp}.xlsx: Detailed analysis results
-    - Multiple log files for different aspects
-    - Temporary files for intermediate results
-    
-    Error handling:
-    - Validates environment variables
-    - Checks API connectivity
-    - Handles file I/O errors
-    - Manages API rate limits
-    - Provides detailed error logging
-    """
+async def initialize_api():
+    """异步初始化 API 客户端"""
+    api = GitHubAPI()
+    await api.initialize()
+    return api
+
+async def main_async():
+    """异步主函数"""
     load_dotenv(".env")
     loggers = setup_logging()
     logger = loggers["main"]
-    url_logger = loggers["url"]
-    llm_logger = loggers["llm"]
-    substep_logger = loggers["substep"]
-    version_resolve_logger = loggers["version_resolve"]
     
-    logger.info("Starting GitHub License Analyzer")
-    
-    # Check environment variables
-    logger.info("Checking environment variables")
-    github_token = os.getenv("GITHUB_TOKEN")
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    logger.info(f"GITHUB_TOKEN present: {'Yes' if github_token else 'No'}")
-    logger.info(f"GITHUB_TOKEN :{github_token[:-20]}... (truncated for security)")
-    logger.info(f"GEMINI_API_KEY present: {'Yes' if gemini_api_key else 'No'}")
-    
-    # Initialize GitHub API
     try:
+        # 初始化 GitHub API
         logger.info("Step 1: Initializing GitHub API client")
-        api = GitHubAPI()
+        api = await initialize_api()
         logger.info("GitHub API client initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize GitHub API client: {str(e)}", exc_info=True)
-        raise
-    
-    # Read input Excel file
-    try:
+        
+        # 读取输入文件
         logger.info("Step 2: Reading input Excel file")
-        logger.info(f"Current working directory: {os.getcwd()}")
-        logger.info(f"Files in current directory: {os.listdir('.')}")
         df = pd.read_excel("input.xlsx")
         logger.info(f"Read {len(df)} rows from input file")
-        logger.info(f"Columns found: {df.columns.tolist()}")
-        logger.info(f"First row data: {df.iloc[0].to_dict()}")
-    except Exception as e:
-        logger.error(f"Failed to read input file: {str(e)}", exc_info=True)
-        raise
-    
-    # 并发处理，限制最大并发数为5（可根据需要调整）
-    results = asyncio.run(process_all_repos(api, df))
-    
-    # Create final output
-    try:
+        
+        # 并发处理仓库
+        results = await process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY)
+        
+        # 处理结果输出
         output_df = pd.DataFrame(results)
         
-        # Ensure all required columns are present
-        required_columns = [
-            "input_url", "repo_url", "input_version", "resolved_version", "used_default_branch",
-            "component_name","concluded_license", "license_files","copyright_notice", "license_analysis", "license_type",
-            "has_license_conflict", "readme_license", "license_file_license",
-             "status", "license_determination_reason",
-            "is_dual_licensed", "dual_license_relationship", "has_third_party_licenses",
-            "third_party_license_location"
-        ]
-        output_df["concluded_license"] = output_df.apply(get_concluded_license, axis=1)
-        # Add any missing columns with None values
-        for col in required_columns:
-            if col not in output_df.columns:
-                output_df[col] = None
+        # 添加 concluded_license
+        logger.info("生成 concluded_license...")
+        output_df['concluded_license'] = output_df.apply(
+            lambda row: get_concluded_license(
+                row.get('license_type'),
+                row.get('readme_license'),
+                row.get('license_file_license')
+            ),
+            axis=1
+        )
         
-        # Reorder columns to ensure consistent output
-        output_df = output_df[required_columns]
-
+        # 重排列顺序
+        logger.info("重排列顺序...")
+        # 获取实际存在的列（配置的列和实际数据的交集）
+        existing_columns = [col for col in RESULT_COLUMNS_ORDER if col in output_df.columns]
+        # 添加任何在数据中存在但不在配置中的列
+        remaining_columns = [col for col in output_df.columns if col not in existing_columns]
+        # 合并所有列
+        final_columns = existing_columns + remaining_columns
+        output_df = output_df[final_columns]
         
+        # 保存结果
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_file = f"outputs/output_{timestamp}.xlsx"
-        output_df.to_excel(output_file, index=False)
-        logger.info(f"Results saved to {output_file}")
+        output_dir = "./outputs"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_file = os.path.join(output_dir, f"output_{timestamp}.xlsx")
+        logger.info(f"保存结果到: {output_file}")
+        
+        # 修改保存逻辑，添加工作表名称
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            output_df.to_excel(writer, sheet_name='分析结果', index=False)
+            
+        # 同时保存一个最新版本
+        latest_file = os.path.join(output_dir, "output_latest.xlsx")
+        with pd.ExcelWriter(latest_file, engine='openpyxl') as writer:
+            output_df.to_excel(writer, sheet_name='分析结果', index=False)
+
+        logger.info(f"处理完成! 共处理 {len(results)} 个仓库")
+        logger.info(f"结果已保存到: {output_file}")
+        logger.info(f"最新结果副本已保存到: {latest_file}")
+        
     except Exception as e:
-        logger.error(f"Failed to save final results: {str(e)}", exc_info=True)
+        logger.error(f"Error in main_async: {str(e)}", exc_info=True)
         raise
-    
-    # Clean up temporary file
+
+def main():
+    """同步入口函数"""
     try:
-        if os.path.exists("temp/temp_results.csv"):
-            os.remove("temp/temp_results.csv")
-            logger.debug("Removed temporary results file")
+        asyncio.run(main_async())
     except Exception as e:
-        logger.warning(f"Failed to remove temporary file: {str(e)}")
-    
-    logger.info("Processing complete")
+        logger.error(f"Failed to run main_async: {str(e)}", exc_info=True)
+        sys.exit(1)
 
 # ============================================================================
 # Script Entry Point

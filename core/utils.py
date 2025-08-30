@@ -7,7 +7,7 @@ import os
 import logging
 import re
 import json
-
+import pandas as pd
 
 
 
@@ -530,9 +530,42 @@ async def construct_copyright_notice_async(year: str, owner: str, repo: str, ref
     return copyright_notice
 
 
-def get_concluded_license(row):
-        for key in ["readme_license", "license_file_license", "license_type"]:
-            val = row.get(key)
-            if val:
-                return val
-        return "unlicensed"
+def get_concluded_license(
+    license_type: Optional[str], 
+    readme_license: Optional[str] = None, 
+    license_file_license: Optional[str] = None
+) -> str:
+    """
+    确定最终的许可证类型。
+    按优先级顺序选择：license_file_license > readme_license > license_type
+    
+    处理规则：
+    1. 任何值为 None、NaN、"NOASSERTION" 的许可证视为无效
+    2. 按优先级选择第一个有效的许可证
+    3. 如果没有有效许可证则返回 "Unlicensed"
+    """
+    def is_valid_license(lic: Any) -> bool:
+        """判断许可证值是否有效"""
+        if lic is None:
+            return False
+        # 处理 pandas 的 NaN
+        if pd.isna(lic):
+            return False
+        # 确保是字符串类型
+        try:
+            lic_str = str(lic).strip().upper()
+            return lic_str != "NOASSERTION" and lic_str != "NAN"
+        except:
+            return False
+    
+    # 按新的优先级顺序检查许可证
+    if is_valid_license(license_file_license):
+        return str(license_file_license).strip()
+    
+    if is_valid_license(readme_license):
+        return str(readme_license).strip()
+    
+    if is_valid_license(license_type):
+        return str(license_type).strip()
+    
+    return "Unlicensed"

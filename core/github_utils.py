@@ -15,6 +15,7 @@ import httpx  # 新增：导入 httpx
 import asyncio  # 新增：导入 asyncio
 from httpx import AsyncClient
 import aiofiles
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
@@ -62,47 +63,19 @@ class GitHubAPI:
     
     BASE_URL = "https://api.github.com"
     
-    def __init__(self):
-
-        self.token = os.getenv("GITHUB_TOKEN")
-        if not self.token:
-            logger.error("GITHUB_TOKEN environment variable not set")
-            raise ValueError("GITHUB_TOKEN environment variable not set")
-        
-        logger.info("Initializing GitHub API client")
+    def __init__(self):  # 改回同步初始化
+        """同步初始化基本属性"""
         self.headers = {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.token}",
-            "X-GitHub-Api-Version": "2022-11-28"
+            "Accept": "application/vnd.github.v3+json",
+            "Authorization": f"token {os.getenv('GITHUB_TOKEN')}"
         }
-        
-        # Configure proxy settings
-        proxy = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
-        if proxy:
-            logger.info(f"Using proxy: {proxy}")
-            self.session = requests.Session()
-            self.session.proxies = {
-                "http": proxy,
-                "https": proxy
-            }
-        else:
-            logger.info("No proxy configured")
-            self.session = requests.Session()
-            
-        self.session.headers.update(self.headers)
-        
-        # Test connection
+    
+    async def initialize(self):  # 新增异步初始化方法
+        """异步初始化和测试连接"""
         try:
             logger.info("Testing GitHub API connection...")
-            self._make_request("/rate_limit")
+            await self._make_request("/rate_limit")
             logger.info("GitHub API connection successful")
-        except requests.exceptions.ProxyError as e:
-            logger.error(f"Proxy connection failed: {str(e)}")
-            logger.info("Retrying without proxy...")
-            # Retry without proxy
-            self.session.proxies = {}
-            self._make_request("/rate_limit")
-            logger.info("GitHub API connection successful without proxy")
         except Exception as e:
             logger.error(f"Failed to connect to GitHub API: {str(e)}")
             raise
@@ -151,6 +124,7 @@ class GitHubAPI:
             logger.debug(f"Request successful. Status code: {response.status_code}")
             return response.json()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
         异步请求处理，包含速率限制处理
@@ -160,37 +134,13 @@ class GitHubAPI:
         if params:
             logger.debug(f"Request parameters: {params}")
         
-        async with AsyncClient() as client:
-            while True:
-                try:
-                    response = await client.get(
-                        url, 
-                        params=params,
-                        headers=self.headers
-                    )
-                    
-                    # 检查速率限制
-                    if response.status_code == 403 and "rate limit" in response.text.lower():
-                        # 从响应头获取重置时间
-                        reset_time = int(response.headers.get("X-RateLimit-Reset", 0))
-                        wait_time = max(reset_time - time.time(), 0) + 1
-                        logger.warning(f"Rate limited. Waiting {wait_time:.0f} seconds...")
-                        
-                        # 使用异步睡眠
-                        await asyncio.sleep(wait_time)
-                        continue
-                        
-                    response.raise_for_status()
-                    return response.json()
-                    
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code == 403 and "rate limit" in e.response.text.lower():
-                        reset_time = int(e.response.headers.get("X-RateLimit-Reset", 0))
-                        wait_time = max(reset_time - time.time(), 0) + 1
-                        logger.warning(f"Rate limited. Waiting {wait_time:.0f} seconds...")
-                        await asyncio.sleep(wait_time)
-                        continue
-                    raise
+        async with AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                url, 
+                params=params,
+                headers=self.headers
+            )
+            return response.json()
 
     def get_repo_info(self, owner: str, repo: str) -> Dict:
         """
@@ -226,7 +176,11 @@ class GitHubAPI:
         异步获取仓库信息
         """
         logger.info(f"Fetching repository info for {owner}/{repo}")
-        return await self._make_request(f"/repos/{owner}/{repo}")
+        try:
+            return await self._make_request(f"/repos/{owner}/{repo}")
+        except Exception as e:
+            logger.error(f"Error fetching repo info for {owner}/{repo}: {str(e)}")
+            raise
 
     def get_branches(self, owner: str, repo: str) -> List[Dict]:
         """

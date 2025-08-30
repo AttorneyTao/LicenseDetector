@@ -61,15 +61,37 @@ def _fetch_packument(pkg_name: str, version: Optional[str] = None) -> dict:
     """
     如果 version 为空，返回 packument（所有版本）。
     如果 version 不为空，返回单个版本对象。
+    
+    Args:
+        pkg_name (str): npm 包名
+        version (Optional[str]): 版本号，可能带有 'v' 前缀
+        
+    Returns:
+        dict: packument 或版本对象
     """
     import requests
+    
+    # 处理版本号中的 'v' 前缀
     if version:
-        url = f"https://registry.npmjs.org/{pkg_name}/{version}"
+        clean_version = version.lstrip('v')
+        url = f"https://registry.npmjs.org/{pkg_name}/{clean_version}"
     else:
         url = f"https://registry.npmjs.org/{pkg_name}"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+        
+    npm_logger.debug(f"Fetching npm package info from: {url}")
+    
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404 and version:
+            # 如果指定版本未找到，尝试获取所有版本信息
+            npm_logger.warning(f"Version {version} not found, fetching all versions")
+            resp = requests.get(f"https://registry.npmjs.org/{pkg_name}", timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        raise
 
 
 def _paginate_versions(first_page: Dict[str, Any]):

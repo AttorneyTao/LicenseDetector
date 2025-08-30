@@ -10,4 +10,26 @@ GEMINI_CONFIG = {
 SCORE_THRESHOLD = 65
 
 # 添加最大并发数配置
-MAX_CONCURRENCY = 10
+MAX_CONCURRENCY = 20
+
+# 结果列的显示顺序配置
+RESULT_COLUMNS_ORDER = [
+    "input_url",
+    "repo_url",
+    "component_name",
+    "input_version",
+    "resolved_version",
+    "used_default_branch",
+    "concluded_license",
+    "license_files",
+    "copyright_notice",
+    "license_type",    
+    "license_analysis",
+    "has_license_conflict",
+    "readme_license",
+    "license_file_license",    
+    "status",
+    "license_determination_reason",
+    "license_text",
+    "error"
+]
