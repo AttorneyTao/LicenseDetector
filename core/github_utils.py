@@ -955,96 +955,68 @@ async def process_github_repository(
 
         # Step 5: Try to get license directly from GitHub API
         substep_logger.info("Step 5/15: Checking for license through GitHub API")
+        license_info = None
+        license_api_error = None
         try:
             license_info = await api.get_license(owner, repo, ref=resolved_version)
-            if license_info:
-                substep_logger.info("Found license through GitHub API")
-                url_logger.info("Found license through GitHub API")
-                url_logger.info(f"License info: {json.dumps(license_info, indent=2)}")
-
-                # Get license content and analyze it
-                license_content = license_info.get("content", "")
-                if license_content:
-                    substep_logger.info("Analyzing license content")
-                    license_file_analysis = await analyze_license_content_async(license_content)
-
-                    # Use the html_url from _links if available
-                    license_url = license_info.get("_links", {}).get("html")
-                    if not license_url:
-                        # Fallback to constructing from download_url
-                        license_url = license_info.get("download_url", "")
-                        if license_url.startswith("https://raw.githubusercontent.com"):
-                            parts = license_url.replace("https://raw.githubusercontent.com/", "").split("/")
-                            if len(parts) >= 3:
-                                owner, repo, *path_parts = parts
-                                path = "/".join(path_parts)
-                                license_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
-
-                    url_logger.info(f"Using license URL: {license_url}")
-                    substep_logger.info("Step 5/15 completed successfully")
-
-                    return {
-                        "input_url": input_url,
-                        "repo_url": repo_url,
-                        "input_version": version,
-                        "resolved_version": resolved_version,
-                        "used_default_branch": used_default_branch,
-                        "component_name": component_name,
-                        "license_files": license_url,
-                        "license_analysis": license_file_analysis,
-                        "license_type": license_info.get("license", {}).get("spdx_id"),
-                        "has_license_conflict": False,
-                        "readme_license": None,
-                        "license_file_license": license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None,
-                        "copyright_notice": await construct_copyright_notice_async(get_github_last_update_time(api,owner,repo,resolved_version), owner, repo, resolved_version, component_name, None, license_content),
-                        "status": "success",
-                        "license_determination_reason": "License found through GitHub API"
-                    }
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
-                substep_logger.warning(f"No license found through GitHub API for {owner}/{repo}")
-                url_logger.info(f"No license found through GitHub API for {owner}/{repo}")
+                substep_logger.warning(f"No license found through GitHub API for {owner}/{repo} at {resolved_version}")
+                license_api_error = e
+                license_info = None
             else:
                 substep_logger.error(f"Error fetching license through GitHub API: {str(e)}")
                 url_logger.error(f"Error fetching license through GitHub API: {str(e)}")
+                license_api_error = e
+                license_info = None
+
+        # 如果指定commit/tag下404，fallback到默认分支再查一次
+        if not license_info and resolved_version != repo_info["default_branch"]:
+            substep_logger.info(f"Fallback: Trying default branch {repo_info['default_branch']} for license")
+            try:
+                license_info = await api.get_license(owner, repo, ref=repo_info["default_branch"])
+                if license_info:
+                    resolved_version = repo_info["default_branch"]
+                    used_default_branch = True
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    substep_logger.warning(f"No license found through GitHub API for {owner}/{repo} at default branch")
+                    license_info = None
+                else:
+                    substep_logger.error(f"Error fetching license through GitHub API: {str(e)}")
+                    url_logger.error(f"Error fetching license through GitHub API: {str(e)}")
+                    license_info = None
 
         # Step 6: Search in repository tree
         substep_logger.info("Step 6/15: Searching for license in repository tree")
-        url_logger.info("No license found through GitHub API, searching in tree")
+        url_logger.info("Searching for license files in tree (regardless of API result)")
 
-        # Get tree using the resolved version
-        substep_logger.info("Getting repository tree")
         tree_response = await api.get_tree(owner, repo, resolved_version)
-        if not isinstance(tree_response, dict):
-            substep_logger.error(f"Invalid tree response: {tree_response}")
-            return {
-                "input_url": input_url,
-                "repo_url": repo_url,
-                "input_version": version,
-                "resolved_version": resolved_version,
-                "used_default_branch": used_default_branch,
-                "component_name": component_name,
-                "error": "Invalid tree response from GitHub API",
-                "status": "error",
-                "license_determination_reason": "Error: Invalid tree response"
-            }
+        tree = tree_response.get("tree", []) if isinstance(tree_response, dict) else []
+        license_files = find_license_files({"tree": tree, "resolved_version": resolved_version}, "", license_keywords)
+        substep_logger.info(f"Found {len(license_files)} license files in tree")
 
-        tree = tree_response.get("tree", [])
-        if not isinstance(tree, list):
-            substep_logger.error(f"Invalid tree data: {tree}")
-            return {
-                "input_url": input_url,
-                "repo_url": repo_url,
-                "input_version": version,
-                "resolved_version": resolved_version,
-                "used_default_branch": used_default_branch,
-                "component_name": component_name,
-                "error": "Invalid tree data from GitHub API",
-                "status": "error",
-                "license_determination_reason": "Error: Invalid tree data"
-            }
+        # 获取API返回的license类型
+        api_license_type = license_info.get("license", {}).get("spdx_id") if license_info else None
 
-        substep_logger.info(f"Retrieved tree with {len(tree)} items")
+        # 分析license文件内容
+        license_file_analysis = None
+        license_file_license = None
+        license_content = None
+        if license_files:
+            for license_file in license_files:
+                license_content = get_file_content(api, owner, repo, license_file.split("/")[-1], resolved_version)
+                if license_content:
+                    license_file_analysis = await analyze_license_content_async(license_content)
+                    if license_file_analysis and license_file_analysis.get("licenses"):
+                        license_file_license = license_file_analysis["licenses"][0]
+                        break
+
+        # 检查API和文件内容是否冲突
+        has_license_conflict = False
+        if api_license_type and license_file_license and api_license_type != license_file_license:
+            has_license_conflict = True
+            substep_logger.warning(f"License conflict detected: API={api_license_type}, File={license_file_license}")
 
         # Step 7: Save tree structure
         substep_logger.info("Step 7/15: Saving tree structure")
@@ -1190,7 +1162,9 @@ async def process_github_repository(
                 final_analysis = license_file_analysis or readme_license_analysis
 
                 # Convert raw GitHub URL to web URL
-                license_url = license_info["download_url"]
+                license_url = license_info.get("download_url")
+                if not license_url:
+                    license_url = license_info.get("html_url") or license_info.get("_links", {}).get("html", "")
                 if license_url.startswith("https://raw.githubusercontent.com"):
                     parts = license_url.replace("https://raw.githubusercontent.com/", "").split("/")
                     if len(parts) >= 3:
@@ -1339,5 +1313,6 @@ async def process_github_repository(
 
 
 async def analyze_with_llm(prompts: List[str]) -> List[Dict]:
+    model = genai.GenerativeModel(GEMINI_CONFIG["model"])
     tasks = [model.generate_content_async(prompt) for prompt in prompts]
     return await asyncio.gather(*tasks)

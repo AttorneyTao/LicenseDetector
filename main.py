@@ -39,6 +39,7 @@ from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license
+from core.googlesource_util import process_googlesource_component_async
 
 # ============================================================================
 # Load Prompts Section
@@ -152,18 +153,38 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     running_tasks += 1
                     logger.info(f"当前并发任务数: {running_tasks}")
                     
-                    result = await process_github_repository(
-                        api,
-                        row["github_url"],
-                        row.get("version"),
-                        name=row.get("name", None)
-                    )
-                    results[index] = result
+                    url = row.get("github_url") or row.get("开源软件的下载链接地址")
+                    version = row.get("version") or row.get("开源软件版本号")
+                    name = row.get("name") or row.get("开源软件名称")
+
+                    # 判断 googlesource
+                    if url and "googlesource.com" in url:
+                        logger.info(f"检测到 googlesource 仓库，调用 googlesource_util: {url}")
+                        result = await process_googlesource_component_async(name, version, url)
+                        # 如果googlesource解析失败，fallback到原逻辑
+                        if result.get("status") == "error" or result.get("error"):
+                            logger.warning(f"Googlesource解析失败，fallback到原逻辑: {url}，错误信息: {result.get('error')}")
+                            result = await process_github_repository(
+                                api,
+                                url,
+                                version,
+                                name=name
+                            )
+                        results[index] = result
+                    else:
+                        # 原有 github 逻辑
+                        result = await process_github_repository(
+                            api,
+                            url,
+                            version,
+                            name=name
+                        )
+                        results[index] = result
                 except Exception as e:
-                    logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
+                    logger.error(f"处理失败 {row.get('github_url') or row.get('开源软件的下载链接地址')}: {e}", exc_info=True)
                     results[index] = {
-                        "input_url": row.get("github_url"), 
-                        "status": "error", 
+                        "input_url": row.get("github_url") or row.get("开源软件的下载链接地址"),
+                        "status": "error",
                         "error": str(e)
                     }
                 finally:
