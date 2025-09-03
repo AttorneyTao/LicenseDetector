@@ -569,3 +569,22 @@ def get_concluded_license(
         return str(license_type).strip()
     
     return "Unlicensed"
+
+
+def extract_thirdparty_dirs_column(df):
+    """
+    在DataFrame中增加一列thirdparty_dirs。
+    如果license_analysis字段中的'thirdparty_dirs'非空，则提取出来，多个用逗号拼接，并加前缀提示。
+    """
+    def extract(row):
+        analysis = row.get("license_analysis")
+        dirs = None
+        if isinstance(analysis, dict):
+            dirs = analysis.get("thirdparty_dirs")
+        if dirs and isinstance(dirs, list) and len(dirs) > 0:
+            joined = ",".join(dirs)
+            return f"本项目包含第三方组件，请关注：{joined}"
+        return ""
+    df = df.copy()
+    df["thirdparty_dirs"] = df.apply(extract, axis=1)
+    return df

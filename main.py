@@ -38,7 +38,7 @@ import google.generativeai as genai
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column
 
 # ============================================================================
 # Load Prompts Section
@@ -239,7 +239,9 @@ async def main_async():
             ),
             axis=1
         )
-        
+        logger.info("生成 thirdparty_dirs 列...")
+        output_df = extract_thirdparty_dirs_column(output_df)
+
         # 重排列顺序
         logger.info("重排列顺序...")
         # 获取实际存在的列（配置的列和实际数据的交集）
