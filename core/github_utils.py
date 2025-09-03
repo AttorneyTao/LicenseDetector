@@ -19,7 +19,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
-from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
+from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
 
 
 
@@ -1187,16 +1187,3 @@ async def process_github_repository(
         }
 
 
-def find_top_level_thirdparty_dirs(tree: List[Dict]) -> List[str]:
-    """
-    查找仓库tree中所有顶层thirdparty/third_party/third-party目录（不递归子目录）。
-    只返回最后一级为thirdparty/third_party/third-party的目录路径。
-    """
-    thirdparty_dirs = []
-    for item in tree:
-        if item.get("type") == "tree":
-            path = item.get("path", "")
-            last_part = path.lower().split("/")[-1]
-            if last_part in ["thirdparty", "third_party", "third-party"]:
-                thirdparty_dirs.append(path)
-    return thirdparty_dirs

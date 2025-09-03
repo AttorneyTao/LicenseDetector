@@ -33,3 +33,9 @@ RESULT_COLUMNS_ORDER = [
     "license_text",
     "error"
 ]
+
+THIRD_PARTY_KEYWORDS = [
+    "thirdparty", "third_party", "third-party",
+    "vendor", "external", "deps", "libraries", "libs","lib","lib-vendor"
+    "modules", "submodules", "contrib", "packages", "extern", "externals"
+]

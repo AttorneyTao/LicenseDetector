@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from .config import GEMINI_CONFIG
+from .config import GEMINI_CONFIG, THIRD_PARTY_KEYWORDS
 import google.generativeai as genai
 from dotenv import load_dotenv
 import yaml
@@ -588,3 +588,34 @@ def extract_thirdparty_dirs_column(df):
     df = df.copy()
     df["thirdparty_dirs"] = df.apply(extract, axis=1)
     return df
+
+
+def find_top_level_thirdparty_dirs(tree: List[Dict]) -> List[str]:
+    """
+    查找仓库tree中所有顶层第三方目录（不递归子目录）。
+    只返回最后一级为配置关键词的目录路径。
+    """
+    thirdparty_dirs = []
+    for item in tree:
+        if item.get("type") == "tree":
+            path = item.get("path", "")
+            last_part = path.lower().split("/")[-1]
+            if last_part in THIRD_PARTY_KEYWORDS:
+                thirdparty_dirs.append(path)
+    return thirdparty_dirs
+
+def find_top_level_thirdparty_dirs_local(root_dir: str) -> List[str]:
+    """
+    在本地目录下查找所有顶层第三方目录（不递归子目录）。
+    只返回最后一级为配置关键词的目录路径（相对root_dir）。
+    """
+    thirdparty_dirs = []
+    for dirpath, dirnames, _ in os.walk(root_dir):
+        for d in dirnames:
+            last_part = d.lower()
+            if last_part in THIRD_PARTY_KEYWORDS:
+                rel_path = os.path.relpath(os.path.join(dirpath, d), root_dir)
+                thirdparty_dirs.append(rel_path)
+        # 只查root_dir下的所有子目录（不递归更深层）
+        break
+    return thirdparty_dirs

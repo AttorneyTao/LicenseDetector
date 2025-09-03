@@ -9,8 +9,11 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from .config import GEMINI_CONFIG
 import google.generativeai as genai
-from .utils import analyze_license_content, extract_copyright_info, analyze_license_content_async
+from .utils import analyze_license_content, extract_copyright_info, analyze_license_content_async, find_top_level_thirdparty_dirs_local
 from bs4 import BeautifulSoup
+import tempfile
+import shutil
+import tarfile
 
 import yaml
 load_dotenv()
@@ -243,7 +246,6 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     if repo_url and repo_url.endswith(".git"):
         repo_url = repo_url[:-4]
     if repo_url and repo_url.startswith("git@github.com:"):
-        # 转换为 https://github.com/<owner>/<repo>
         repo_url = repo_url.replace("git@github.com:", "https://github.com/")
     logger.debug(f"Parsed repo_url: {repo_url}")
 
@@ -354,6 +356,21 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         except Exception as e:
             logger.error(f"Failed to call process_github_repository: {e}", exc_info=True)
 
+    # 新增逻辑：没有github仓库时，分析npm包tarball中的thirdparty目录
+    thirdparty_dirs = []
+    if not repo_url or "github.com" not in repo_url:
+        tarball_url = version_obj.get("dist", {}).get("tarball")
+        if tarball_url:
+            try:
+                thirdparty_dirs = analyze_npm_tarball_thirdparty_dirs(tarball_url)
+                logger.info(f"Found thirdparty dirs in npm tarball: {thirdparty_dirs}")
+            except Exception as e:
+                logger.warning(f"Failed to analyze npm tarball for thirdparty dirs: {e}")
+        # 写入license_analysis
+        license_analysis = {"thirdparty_dirs": thirdparty_dirs}
+    else:
+        license_analysis = None
+
     # 处理copyright_notice逻辑
     final_copyright_notice = copyright_notice
     if github_copyright_notice:
@@ -371,11 +388,11 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         "used_default_branch": False,
         "component_name": pkg_name,
         "license_files": final_license_file,
-        "license_analysis": github_fields["license_analysis"],
+        "license_analysis": github_fields["license_analysis"] if repo_url and "github.com" in repo_url else license_analysis,
         "license_type": license_type,
-        "has_license_conflict": github_fields["has_license_conflict"],
-        "readme_license": github_fields["readme_license"],
-        "license_file_license": github_fields["license_file_license"],
+        "has_license_conflict": github_fields["has_license_conflict"] if repo_url and "github.com" in repo_url else None,
+        "readme_license": github_fields["readme_license"] if repo_url and "github.com" in repo_url else readme_license,
+        "license_file_license": github_fields["license_file_license"] if repo_url and "github.com" in repo_url else None,
         "copyright_notice": final_copyright_notice,
         "status": "success",
         "license_determination_reason": "Fetched from npm registry",
@@ -388,3 +405,39 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
 # ---------------------------------------------------------------------------
 # This module exposes only process_npm_repository for programmatic use.
 # ---------------------------------------------------------------------------
+def download_and_extract_npm_tarball(tarball_url: str) -> str:
+    """
+    下载npm包tarball并解压到临时目录，返回解压后的根目录路径。
+    """
+    
+    tmp_dir = tempfile.mkdtemp()
+    tarball_path = os.path.join(tmp_dir, "package.tgz")
+    # 下载
+    with requests.get(tarball_url, stream=True) as r:
+        r.raise_for_status()
+        with open(tarball_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    # 解包
+    with tarfile.open(tarball_path, "r:gz") as tar:
+        tar.extractall(path=tmp_dir)
+    # npm包一般解到 tmp_dir/package
+    return tmp_dir
+
+def analyze_npm_tarball_thirdparty_dirs(tarball_url: str) -> List[str]:
+    """
+    下载并分析npm tarball中的第三方目录，分析后自动清理临时文件。
+    """
+    tmp_dir = None
+    try:
+        tmp_dir = download_and_extract_npm_tarball(tarball_url)
+        # npm包一般解到 tmp_dir/package
+        package_root = os.path.join(tmp_dir, "package")
+        if not os.path.isdir(package_root):
+            # 有些包直接解到tmp_dir
+            package_root = tmp_dir
+        thirdparty_dirs = find_top_level_thirdparty_dirs_local(package_root)
+        return thirdparty_dirs
+    finally:
+        if tmp_dir and os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir)
