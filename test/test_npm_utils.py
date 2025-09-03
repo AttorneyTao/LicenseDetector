@@ -1,8 +1,58 @@
 import os
-import tempfile
 import tarfile
+import tempfile
 import shutil
-from core.npm_utils import analyze_npm_tarball_thirdparty_dirs
+import pytest
+from core.npm_utils import async_analyze_npm_tarball_thirdparty_dirs
+
+@pytest.mark.asyncio
+async def test_async_analyze_npm_tarball_thirdparty_dirs(monkeypatch):
+    # 1. 创建一个 fake tarball，包含 third_party 和 vendor 目录
+    tmp_dir = tempfile.mkdtemp()
+    package_dir = os.path.join(tmp_dir, "package")
+    os.makedirs(os.path.join(package_dir, "third_party"))
+    os.makedirs(os.path.join(package_dir, "vendor"))
+    with open(os.path.join(package_dir, "third_party", "foo.txt"), "w") as f:
+        f.write("test")
+    tarball_path = os.path.join(tmp_dir, "fake.tgz")
+    with tarfile.open(tarball_path, "w:gz") as tar:
+        tar.add(package_dir, arcname="package")
+
+    # 2. mock aiohttp 下载，直接读取本地 fake.tgz
+    import aiohttp
+    import aiofiles
+
+    class FakeResponse:
+        def __init__(self, path):
+            self.path = path
+            self.status = 200
+            self.content = self
+        async def __aenter__(self): return self
+        async def __aexit__(self, exc_type, exc, tb): pass
+        def raise_for_status(self): pass
+        async def iter_chunked(self, chunk_size):
+            async with aiofiles.open(self.path, "rb") as f:
+                while True:
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+
+    class FakeSession:
+        async def __aenter__(self): return self
+        async def __aexit__(self, exc_type, exc, tb): pass
+        def get(self, url):  # 这里改为普通def
+            return FakeResponse(tarball_path)
+
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda: FakeSession())
+
+    # 3. 调用异步分析函数
+    dirs = await async_analyze_npm_tarball_thirdparty_dirs("http://fake-url/fake.tgz")
+    assert "third_party" in dirs
+    assert "vendor" in dirs
+
+    # 4. 清理
+    shutil.rmtree(tmp_dir)
 
 def create_fake_tarball_with_thirdparty(tmp_dir):
     # 创建一个临时目录结构
@@ -18,41 +68,3 @@ def create_fake_tarball_with_thirdparty(tmp_dir):
         tar.add(package_dir, arcname="package")
     return tarball_path
 
-def test_analyze_npm_tarball_thirdparty_dirs_local():
-    tmp_dir = tempfile.mkdtemp()
-    try:
-        tarball_path = create_fake_tarball_with_thirdparty(tmp_dir)
-        # 用 file:// 协议模拟 requests.get
-        import requests
-        from unittest.mock import patch
-
-        class FakeResponse:
-            def __init__(self, path):
-                self.path = path
-                self.status_code = 200
-            def raise_for_status(self):
-                pass
-            def iter_content(self, chunk_size=8192):
-                with open(self.path, "rb") as f:
-                    while True:
-                        chunk = f.read(chunk_size)
-                        if not chunk:
-                            break
-                        yield chunk
-            def __enter__(self):
-                return self
-            def __exit__(self, exc_type, exc_val, exc_tb):
-                pass
-
-        def fake_requests_get(url, stream=True):
-            # 忽略url，直接返回本地文件
-            return FakeResponse(tarball_path)
-
-        with patch("requests.get", fake_requests_get):
-            # 这里传入任意字符串即可
-            dirs = analyze_npm_tarball_thirdparty_dirs("http://fake-url/fake.tgz")
-            # 断言
-            assert "third_party" in dirs
-            assert "vendor" in dirs
-    finally:
-        shutil.rmtree(tmp_dir)

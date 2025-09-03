@@ -14,6 +14,8 @@ from bs4 import BeautifulSoup
 import tempfile
 import shutil
 import tarfile
+import aiofiles
+import aiohttp
 
 import yaml
 load_dotenv()
@@ -404,7 +406,7 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         tarball_url = version_obj.get("dist", {}).get("tarball")
         if tarball_url:
             try:
-                thirdparty_dirs = analyze_npm_tarball_thirdparty_dirs(tarball_url)
+                thirdparty_dirs = await async_analyze_npm_tarball_thirdparty_dirs(tarball_url)
                 logger.info(f"Found thirdparty dirs in npm tarball: {thirdparty_dirs}")
             except Exception as e:
                 logger.warning(f"Failed to analyze npm tarball for thirdparty dirs: {e}")
@@ -447,36 +449,33 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
 # ---------------------------------------------------------------------------
 # This module exposes only process_npm_repository for programmatic use.
 # ---------------------------------------------------------------------------
-def download_and_extract_npm_tarball(tarball_url: str) -> str:
+async def async_download_and_extract_npm_tarball(tarball_url: str) -> str:
     """
-    下载npm包tarball并解压到临时目录，返回解压后的根目录路径。
+    异步下载npm包tarball并解压到临时目录，返回解压后的根目录路径。
     """
-    
     tmp_dir = tempfile.mkdtemp()
     tarball_path = os.path.join(tmp_dir, "package.tgz")
-    # 下载
-    with requests.get(tarball_url, stream=True) as r:
-        r.raise_for_status()
-        with open(tarball_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-    # 解包
+    # 异步下载
+    async with aiohttp.ClientSession() as session:
+        async with session.get(tarball_url) as resp:
+            resp.raise_for_status()
+            async with aiofiles.open(tarball_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(8192):
+                    await f.write(chunk)
+    # 解包（解包用同步方式，tarfile不支持异步）
     with tarfile.open(tarball_path, "r:gz") as tar:
         tar.extractall(path=tmp_dir)
-    # npm包一般解到 tmp_dir/package
     return tmp_dir
 
-def analyze_npm_tarball_thirdparty_dirs(tarball_url: str) -> List[str]:
+async def async_analyze_npm_tarball_thirdparty_dirs(tarball_url: str) -> List[str]:
     """
-    下载并分析npm tarball中的第三方目录，分析后自动清理临时文件。
+    异步下载并分析npm tarball中的第三方目录，分析后自动清理临时文件。
     """
     tmp_dir = None
     try:
-        tmp_dir = download_and_extract_npm_tarball(tarball_url)
-        # npm包一般解到 tmp_dir/package
+        tmp_dir = await async_download_and_extract_npm_tarball(tarball_url)
         package_root = os.path.join(tmp_dir, "package")
         if not os.path.isdir(package_root):
-            # 有些包直接解到tmp_dir
             package_root = tmp_dir
         thirdparty_dirs = find_top_level_thirdparty_dirs_local(package_root)
         return thirdparty_dirs
