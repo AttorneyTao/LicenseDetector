@@ -36,6 +36,8 @@ except NameError:  # pragma: no cover – fallback for standalone usage
 # ---------------------------------------------------------------------------
 
 NPM_REGISTRY_BASE = "https://registry.npmjs.org"
+NPMMIRROR_REGISTRY_BASE = "https://registry.npmmirror.com"
+TENCENT_MIRROR_BASE = "https://mirrors.tencent.com/npm"
 
 class NpmAPIError(Exception):
     """Raised when the npm registry returns an unexpected response."""
@@ -47,54 +49,94 @@ class NpmAPIError(Exception):
 def _parse_package_name(url_or_name: str) -> str:
     """Extract npm package name (supports @scope) from full URL or raw name."""
     npm_logger.info("Parsing package name from input: %s", url_or_name)
-    if url_or_name.startswith("http"):
-        path = urlparse(url_or_name).path
-        match = re.match(r"/(?:package/)?(?P<name>.+)", path.rstrip("/"))
-        if match:
-            name = match.group("name")
-        else:
-            name = path.rstrip("/").split("/")[-1]
-    else:
-        name = url_or_name
-    npm_logger.info("Resolved package name: %s", name)
-    return name
+    if not url_or_name.startswith("http"):
+        return url_or_name
+        
+    parsed = urlparse(url_or_name)
+    path = parsed.path.strip('/')
+    
+    # 1. 处理 tgz 或其他格式的直接下载链接
+    if '/-/' in path:
+        # 例如: aegis-web-sdk/-/aegis-web-sdk-1.39.3.tgz
+        # 或者: @types/node/-/node-14.14.31.tgz
+        parts = path.split('/-/', 1)[0]  # 取 /-/ 之前的部分
+        if parts.startswith('npm/'):  # 处理腾讯镜像的路径前缀
+            parts = parts[4:]
+        return parts
+    
+    # 2. 处理包主页格式
+    path = re.sub(r'^(?:npm/|package/)', '', path)
+    path = re.sub(r'/v/[^/]+$', '', path)  # 移除版本号路径
+    path = path.rstrip('/')
+    
+    # 3. 处理作用域包
+    parts = path.split('/')
+    if parts and parts[0].startswith('@'):
+        # 确保作用域包包含两部分
+        return '/'.join(parts[:2]) if len(parts) > 1 else parts[0]
+    
+    # 4. 返回第一段作为包名
+    return parts[0] if parts else ''
 
 
 def _fetch_packument(pkg_name: str, version: Optional[str] = None) -> dict:
-    """
-    如果 version 为空，返回 packument（所有版本）。
-    如果 version 不为空，返回单个版本对象。
-    
-    Args:
-        pkg_name (str): npm 包名
-        version (Optional[str]): 版本号，可能带有 'v' 前缀
-        
-    Returns:
-        dict: packument 或版本对象
-    """
-    import requests
-    
-    # 处理版本号中的 'v' 前缀
+    """从各个 npm registry 获取包信息。"""
+    urls = [
+        f"{NPM_REGISTRY_BASE}/{pkg_name}",
+        f"{NPMMIRROR_REGISTRY_BASE}/{pkg_name}",
+        f"{TENCENT_MIRROR_BASE}/{pkg_name}"
+    ]
     if version:
-        clean_version = version.lstrip('v')
-        url = f"https://registry.npmjs.org/{pkg_name}/{clean_version}"
-    else:
-        url = f"https://registry.npmjs.org/{pkg_name}"
-        
-    npm_logger.debug(f"Fetching npm package info from: {url}")
+        urls = [
+            f"{NPM_REGISTRY_BASE}/{pkg_name}/{version}",
+            f"{NPMMIRROR_REGISTRY_BASE}/{pkg_name}/{version}",
+            f"{TENCENT_MIRROR_BASE}/{pkg_name}/{version}"
+        ]
+
+    last_error = None
+    all_errors = []  # 收集所有错误信息
     
-    try:
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404 and version:
-            # 如果指定版本未找到，尝试获取所有版本信息
-            npm_logger.warning(f"Version {version} not found, fetching all versions")
-            resp = requests.get(f"https://registry.npmjs.org/{pkg_name}", timeout=10)
+    for url in urls:
+        try:
+            npm_logger.debug(f"Trying to fetch packument from: {url}")
+            resp = requests.get(url, timeout=10)
             resp.raise_for_status()
             return resp.json()
-        raise
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP Error for {url}: {e.response.status_code} - {e.response.reason}"
+            npm_logger.error(error_msg)
+            all_errors.append(error_msg)
+            last_error = e
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Connection Error for {url}: {str(e)}"
+            npm_logger.error(error_msg)
+            all_errors.append(error_msg)
+            last_error = e
+        except requests.exceptions.Timeout as e:
+            error_msg = f"Timeout Error for {url}: {str(e)}"
+            npm_logger.error(error_msg)
+            all_errors.append(error_msg)
+            last_error = e
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Request Error for {url}: {str(e)}"
+            npm_logger.error(error_msg)
+            all_errors.append(error_msg)
+            last_error = e
+        except json.JSONDecodeError as e:
+            error_msg = f"JSON Decode Error for {url}: {str(e)}"
+            npm_logger.error(error_msg)
+            all_errors.append(error_msg)
+            last_error = e
+        except Exception as e:
+            error_msg = f"Unexpected Error for {url}: {str(e)}"
+            npm_logger.error(error_msg, exc_info=True)
+            all_errors.append(error_msg)
+            last_error = e
+    
+    # 所有尝试都失败了,记录详细错误信息
+    error_summary = "\n".join(all_errors)
+    npm_logger.error(f"All attempts to fetch packument failed for {pkg_name}@{version}:\n{error_summary}")
+    raise NpmAPIError(f"Failed to fetch packument from all registries: {str(last_error)}")
 
 
 def _paginate_versions(first_page: Dict[str, Any]):
