@@ -463,7 +463,23 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
 
     # Get default branch
     repo_info = await api.get_repo_info(owner, repo)  # 添加 await
-    default_branch = repo_info["default_branch"]
+    # 安全获取 default_branch，没有则 fallback
+    default_branch = repo_info.get("default_branch")
+    if not default_branch:
+        # fallback 顺序：main > master > 第一个 branch > 'main'
+        branches = await api.get_branches(owner, repo)
+        branch_names = [b.get("name") for b in branches if "name" in b]
+        if "main" in branch_names:
+            default_branch = "main"
+        elif "master" in branch_names:
+            default_branch = "master"
+        elif branch_names:
+            default_branch = branch_names[0]
+        else:
+            default_branch = "main"
+        logging.getLogger('version_resolve').warning(
+            f"repo_info for {owner}/{repo} missing 'default_branch', fallback to: {default_branch}"
+        )
     version_resolve_logger.info(f"Repository default branch: {default_branch}")
 
     # Get all branches and tags
@@ -982,19 +998,19 @@ async def process_github_repository(
                 license_file_analysis_result["thirdparty_dirs"] = thirdparty_dirs
             # 只要tree分析有结果，直接返回
             if license_file_analysis_result and license_file_analysis_result.get("licenses"):
-                web_license_files = []
-                for license_file in license_files:
-                    if license_file.startswith("https://raw.githubusercontent.com"):
-                        parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
-                        if len(parts) >= 3:
-                            owner, repo, *path_parts = parts
-                            path = "/".join(path_parts)
-                            web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
-                            web_license_files.append(web_url)
-                        else:
-                            web_license_files.append(license_file)
-                    else:
-                        web_license_files.append(license_file)
+                web_license_files = deduplicate_license_files(license_files, owner, repo, resolved_version)
+                # for license_file in license_files:
+                #     if license_file.startswith("https://raw.githubusercontent.com"):
+                #         parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
+                #         if len(parts) >= 3:
+                #             owner, repo, *path_parts = parts
+                #             path = "/".join(path_parts)
+                #             web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                #             web_license_files.append(web_url)
+                #         else:
+                #             web_license_files.append(license_file)
+                #     else:
+                #         web_license_files.append(license_file)
                 determination_reason = f"Found license files in {sub_path or 'root'}: {', '.join([url.split('/')[-1] for url in license_files])}"
                 copyright_notice = await construct_copyright_notice_async(
                     await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
@@ -1189,5 +1205,32 @@ async def process_github_repository(
             "status": "error",
             "license_determination_reason": f"Error: {error_msg}"
         }
+
+def deduplicate_license_files(license_files: List[str], owner: str, repo: str, resolved_version: str) -> List[str]:
+    """
+    对 license_files 去重，确保同一个物理文件只出现一次（raw 路径和本地路径归一化后只保留一个）。
+    支持 raw.githubusercontent.com 路径和相对路径。
+    """
+    normalized = set()
+    result = []
+    for license_file in license_files:
+        if license_file.startswith("https://raw.githubusercontent.com"):
+            parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
+            if len(parts) >= 4:
+                owner_, repo_, ref, *path_parts = parts
+                path = "/".join(path_parts)
+                norm_key = (owner_, repo_, path)
+                web_url = f"https://github.com/{owner_}/{repo_}/blob/{ref}/{path}"
+            else:
+                norm_key = license_file
+                web_url = license_file
+        else:
+            # 相对路径或其他情况
+            norm_key = (owner, repo, license_file.replace("\\", "/"))
+            web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{license_file}"
+        if norm_key not in normalized:
+            normalized.add(norm_key)
+            result.append(web_url)
+    return result
 
 

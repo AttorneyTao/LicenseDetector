@@ -583,7 +583,7 @@ def extract_thirdparty_dirs_column(df):
             dirs = analysis.get("thirdparty_dirs")
         if dirs and isinstance(dirs, list) and len(dirs) > 0:
             joined = ",".join(dirs)
-            return f"本项目包含第三方组件，请关注：{joined}"
+            return f"本项目包含第三方组件，请关注：{joined} 目录"
         return ""
     df = df.copy()
     df["thirdparty_dirs"] = df.apply(extract, axis=1)

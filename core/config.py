@@ -36,6 +36,7 @@ RESULT_COLUMNS_ORDER = [
 
 THIRD_PARTY_KEYWORDS = [
     "thirdparty", "third_party", "third-party",
-    "vendor", "external", "deps", "libraries", "libs","lib","lib-vendor"
-    "modules", "submodules", "contrib", "packages", "extern", "externals"
+    "vendor", "external", "deps", "libraries", "lib-vendor", "dependencies",
+    "3rdparty", "3rd_party", "3rd-party",
+    "modules", "submodules", "contrib", "extern", "externals"
 ]

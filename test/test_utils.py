@@ -11,10 +11,10 @@ def test_extract_thirdparty_dirs_column():
     ]
     df = pd.DataFrame(data)
     result_df = extract_thirdparty_dirs_column(df)
-    assert result_df.loc[0, "thirdparty_dirs"] == "本项目包含第三方组件，请关注：third_party,src/thirdparty"
+    assert result_df.loc[0, "thirdparty_dirs"] == "本项目包含第三方组件，请关注：third_party,src/thirdparty 目录"
     assert result_df.loc[1, "thirdparty_dirs"] == ""
     assert result_df.loc[2, "thirdparty_dirs"] == ""
-    assert result_df.loc[3, "thirdparty_dirs"] == "本项目包含第三方组件，请关注：deps/third-party"
+    assert result_df.loc[3, "thirdparty_dirs"] == "本项目包含第三方组件，请关注：deps/third-party 目录"
     assert result_df.loc[4, "thirdparty_dirs"] == ""
 
 
