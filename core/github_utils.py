@@ -21,7 +21,8 @@ from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
 
-
+import platform
+from openai import AsyncOpenAI
 
 class Kind(Enum):
     REPO = "REPO"
@@ -30,7 +31,7 @@ class Kind(Enum):
 
 
 #==============================================================================
-from .config import GEMINI_CONFIG
+from .config import GEMINI_CONFIG, QWEN_CONFIG
 
 load_dotenv()
 USE_LLM = os.getenv("USE_LLM", "true").lower() == "true"
@@ -1233,27 +1234,76 @@ def deduplicate_license_files(license_files: List[str], owner: str, repo: str, r
             result.append(web_url)
     return result
 
+# async def find_github_url_from_package_url(package_url: str, name: Optional[str] = None) -> Optional[str]:
+#     """
+#     异步：根据 package_url 和 name，调用 LLM 查找 GitHub 仓库链接
+#     """
+#     if not USE_LLM:
+#         logger.info("LLM is disabled, skipping GitHub URL lookup")
+#         return None
+
+#     try:
+#         prompt = PROMPTS["github_url_finder"].format(package_url=package_url, name=name or "")
+#         llm_logger.info("GitHub URL Lookup Request:")
+#         llm_logger.info(f"Prompt: {prompt}")
+
+#         model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+#         response = await model.generate_content(prompt)  # 异步调用
+
+#         llm_logger.info("GitHub URL Lookup Response:")
+#         llm_logger.info(f"Response: {response.text}")
+
+#         if response.text:
+#             json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+#             if json_match:
+#                 result = json.loads(json_match.group())
+#                 github_url = result.get("github_url")
+#                 confidence = result.get("confidence", 0.0)
+#                 llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
+#                 if github_url and confidence >= 0.7:
+#                     return github_url
+#                 else:
+#                     llm_logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
+#             else:
+#                 llm_logger.warning("No JSON found in GitHub URL lookup response")
+#     except Exception as e:
+#         llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
+#     return None
+
+
+
+
 async def find_github_url_from_package_url(package_url: str, name: Optional[str] = None) -> Optional[str]:
     """
-    异步：根据 package_url 和 name，调用 LLM 查找 GitHub 仓库链接
+    使用 Qwen 百炼模型，根据 package_url 和 name 异步查找 GitHub 仓库链接
     """
     if not USE_LLM:
         logger.info("LLM is disabled, skipping GitHub URL lookup")
         return None
 
+    prompt = PROMPTS["github_url_finder"].format(package_url=package_url, name=name or "")
+    llm_logger.info("GitHub URL Lookup Request:")
+    llm_logger.info(f"Prompt: {prompt}")
+
+    client = AsyncOpenAI(
+        api_key=QWEN_CONFIG["api_key"],
+        base_url=QWEN_CONFIG["base_url"],
+    )
+
+    if platform.system() == "Windows":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     try:
-        prompt = PROMPTS["github_url_finder"].format(package_url=package_url, name=name or "")
-        llm_logger.info("GitHub URL Lookup Request:")
-        llm_logger.info(f"Prompt: {prompt}")
-
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = await model.generate_content(prompt)  # 异步调用
-
+        response = await client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=QWEN_CONFIG["model"],  # 统一使用配置的模型类型
+        )
         llm_logger.info("GitHub URL Lookup Response:")
-        llm_logger.info(f"Response: {response.text}")
+        llm_logger.info(f"Response: {response.model_dump_json()}")
 
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        content = response.choices[0].message.content if response.choices else ""
+        if content:
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 github_url = result.get("github_url")
@@ -1268,5 +1318,3 @@ async def find_github_url_from_package_url(package_url: str, name: Optional[str]
     except Exception as e:
         llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
     return None
-
-

@@ -134,16 +134,21 @@ def test_deduplicate_license_files():
 
 @pytest.mark.asyncio
 async def test_find_github_url_from_package_url_success(monkeypatch):
-    # 模拟 USE_LLM 为 True
     monkeypatch.setattr(github_utils, "USE_LLM", True)
-    # 构造 mock response
+
+    # 构造 Qwen风格的 mock response
+    class MockChoice:
+        class Message:
+            content = '{"github_url": "https://github.com/owner/repo", "confidence": 0.85}'
+        message = Message()
     class MockResponse:
-        text = '{"github_url": "https://github.com/owner/repo", "confidence": 0.85}'
-    mock_model = AsyncMock()
-    mock_model.generate_content = AsyncMock(return_value=MockResponse())
-    # patch genai.GenerativeModel 返回 mock_model
-    monkeypatch.setattr(github_utils.genai, "GenerativeModel", lambda model: mock_model)
-    # 调用
+        choices = [MockChoice()]
+        def model_dump_json(self):
+            return '{"choices":[{"message":{"content":"{\\"github_url\\": \\"https://github.com/owner/repo\\", \\"confidence\\": 0.85}"}}]}'
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=MockResponse())
+    monkeypatch.setattr(github_utils, "AsyncOpenAI", lambda **kwargs: mock_client)
+
     result = await github_utils.find_github_url_from_package_url("https://pypi.org/project/xxx", name="xxx")
     assert result == "https://github.com/owner/repo"
 
