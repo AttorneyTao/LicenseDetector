@@ -44,5 +44,5 @@ THIRD_PARTY_KEYWORDS = [
 QWEN_CONFIG = {
     "api_key": os.getenv("DASHSCOPE_API_KEY"),
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen-plus"  # 统一配置模型类型
+    "model": "qwen-max"  # 统一配置模型类型
 }

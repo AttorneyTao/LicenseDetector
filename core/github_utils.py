@@ -16,11 +16,10 @@ import asyncio  # 新增：导入 asyncio
 from httpx import AsyncClient
 import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential
-
 from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
-
+from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
 import platform
 from openai import AsyncOpenAI
 
@@ -849,6 +848,25 @@ async def process_github_repository(
         parsed = urlparse(github_url)
         if parsed.netloc != "github.com":
             substep_logger.info(f"Non-GitHub URL detected: {github_url}")
+
+            # 新增：先判断是否为 NuGet 包
+            nuget_result = None
+            if name and version:
+                try:
+                    exists = await check_if_nuget_package_exists(name, version)
+                    if exists:
+                        substep_logger.info(f"NuGet 包存在，调用 process_nuget_packages")
+                        nuget_result = await process_nuget_packages(name, version)
+                    else:
+                        substep_logger.info(f"不是 NuGet 包或未找到对应版本：{name} {version}")
+                except Exception as e:
+                    substep_logger.warning(f"NuGet API 调用失败: {e}")
+
+            # 只要 license_type 不为 None 就认为成功并返回
+            if nuget_result and nuget_result.get("license_type") is not None:
+                substep_logger.info(f"NuGet API 成功，返回 NuGet 结果")
+                return nuget_result
+
             github_url = await find_github_url_from_package_url(github_url, name)
             if not github_url:
                 substep_logger.warning(f"Could not find GitHub URL for {github_url}")

@@ -180,11 +180,11 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         else:
                             logger.info(f"get_github_url 失败,改用大模型方案")
                             result = await process_github_repository(
-                            api,
-                            url,
-                            version,
-                            name=name
-                        )
+                                api,
+                                url,
+                                version,
+                                name=name
+                            )
                     else:
                         result = await process_github_repository(
                             api,
@@ -192,13 +192,16 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                             version,
                             name=name
                         )
+                    # 新增：保留 input_name 字段
+                    result["input_name"] = name
                     results[index] = result
                 except Exception as e:
                     logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
                     results[index] = {
                         "input_url": row.get("github_url"), 
                         "status": "error", 
-                        "error": str(e)
+                        "error": str(e),
+                        "input_name": name  # 错误时也保留 input_name
                     }
                 finally:
                     running_tasks -= 1
