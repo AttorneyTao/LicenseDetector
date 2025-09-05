@@ -11,6 +11,7 @@
 # Set the default encoding for stdout and stderr to utf-8
 import sys
 import codecs
+import re
 
 
 

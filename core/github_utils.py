@@ -972,8 +972,8 @@ async def process_github_repository(
         substep_logger.info(f"found thirdparty_dirs at {thirdparty_dirs}")
 
         # Step 7: Save tree structure
-        substep_logger.info("Step 7/15: Saving tree structure")
-        await save_github_tree_to_file(repo_url, resolved_version, tree)
+        #substep_logger.info("Step 7/15: Saving tree structure")
+        #await save_github_tree_to_file(repo_url, resolved_version, tree)
 
         # Step 9: Search for license files
         substep_logger.info("Step 9/15: Searching for license files")
@@ -1208,14 +1208,14 @@ async def process_github_repository(
         }
 
 def deduplicate_license_files(license_files: List[str], owner: str, repo: str, resolved_version: str) -> List[str]:
-    """
-    对 license_files 去重，确保同一个物理文件只出现一次（raw 路径和本地路径归一化后只保留一个）。
-    支持 raw.githubusercontent.com 路径和相对路径。
-    """
     normalized = set()
     result = []
     for license_file in license_files:
-        if license_file.startswith("https://raw.githubusercontent.com"):
+        # 如果已经是 GitHub web 路径，直接加入
+        if license_file.startswith("https://github.com/"):
+            norm_key = license_file
+            web_url = license_file
+        elif license_file.startswith("https://raw.githubusercontent.com"):
             parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
             if len(parts) >= 4:
                 owner_, repo_, ref, *path_parts = parts
@@ -1226,7 +1226,6 @@ def deduplicate_license_files(license_files: List[str], owner: str, repo: str, r
                 norm_key = license_file
                 web_url = license_file
         else:
-            # 相对路径或其他情况
             norm_key = (owner, repo, license_file.replace("\\", "/"))
             web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{license_file}"
         if norm_key not in normalized:
