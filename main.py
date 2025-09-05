@@ -39,6 +39,7 @@ from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column
+from core.go_utils import process_go_package, get_github_url_from_pkggo
 
 # ============================================================================
 # Load Prompts Section
@@ -151,13 +152,45 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                 try:
                     running_tasks += 1
                     logger.info(f"当前并发任务数: {running_tasks}")
-                    
-                    result = await process_github_repository(
-                        api,
-                        row["github_url"],
-                        row.get("version"),
-                        name=row.get("name", None)
-                    )
+
+                    url = row["github_url"]
+                    version = row.get("version")
+                    name = row.get("name", None)
+
+                    # 新增：判断是否为 Go 包
+                    is_go_pkg = False
+                    if isinstance(url, str):
+                        # 支持 pkg.go.dev、go.dev、go module path 等常见格式
+                        if url.startswith("https://pkg.go.dev/") or url.startswith("https://go.dev/") or re.match(r"^go\.[\w\.-]+/", url):
+                            is_go_pkg = True
+
+                    if is_go_pkg:
+                        logger.info(f"检测到 Go 包 URL: {url}，尝试 get_github_url")
+                        github_info = await get_github_url_from_pkggo(url, version, name)
+                        github_url = github_info.get("github_url")
+                        if github_url:
+                            logger.info(f"get_github_url 成功，继续走 GitHub 流程: {github_url}")
+                            result = await process_github_repository(
+                                api,
+                                github_url,
+                                version,
+                                name=name
+                            )
+                        else:
+                            logger.info(f"get_github_url 失败,改用大模型方案")
+                            result = await process_github_repository(
+                            api,
+                            url,
+                            version,
+                            name=name
+                        )
+                    else:
+                        result = await process_github_repository(
+                            api,
+                            url,
+                            version,
+                            name=name
+                        )
                     results[index] = result
                 except Exception as e:
                     logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
@@ -169,10 +202,10 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                 finally:
                     running_tasks -= 1
                     logger.info(f"任务完成，当前并发任务数: {running_tasks}")
-                
+
                 # 更新进度条
                 pbar.update(1)
-                
+
                 # 检查是否需要保存临时文件
                 current_time = time.time()
                 if current_time - last_save_time >= SAVE_INTERVAL:
