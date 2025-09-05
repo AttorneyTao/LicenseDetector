@@ -848,7 +848,7 @@ async def process_github_repository(
         parsed = urlparse(github_url)
         if parsed.netloc != "github.com":
             substep_logger.info(f"Non-GitHub URL detected: {github_url}")
-            github_url = find_github_url_from_package_url(github_url)
+            github_url = await find_github_url_from_package_url(github_url, name)
             if not github_url:
                 substep_logger.warning(f"Could not find GitHub URL for {github_url}")
                 return {
@@ -1232,5 +1232,41 @@ def deduplicate_license_files(license_files: List[str], owner: str, repo: str, r
             normalized.add(norm_key)
             result.append(web_url)
     return result
+
+async def find_github_url_from_package_url(package_url: str, name: Optional[str] = None) -> Optional[str]:
+    """
+    异步：根据 package_url 和 name，调用 LLM 查找 GitHub 仓库链接
+    """
+    if not USE_LLM:
+        logger.info("LLM is disabled, skipping GitHub URL lookup")
+        return None
+
+    try:
+        prompt = PROMPTS["github_url_finder"].format(package_url=package_url, name=name or "")
+        llm_logger.info("GitHub URL Lookup Request:")
+        llm_logger.info(f"Prompt: {prompt}")
+
+        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+        response = await model.generate_content(prompt)  # 异步调用
+
+        llm_logger.info("GitHub URL Lookup Response:")
+        llm_logger.info(f"Response: {response.text}")
+
+        if response.text:
+            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                github_url = result.get("github_url")
+                confidence = result.get("confidence", 0.0)
+                llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
+                if github_url and confidence >= 0.7:
+                    return github_url
+                else:
+                    llm_logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
+            else:
+                llm_logger.warning("No JSON found in GitHub URL lookup response")
+    except Exception as e:
+        llm_logger.error(f"Failed to find GitHub URL: {str(e)}", exc_info=True)
+    return None
 
 

@@ -73,8 +73,9 @@ copyright_analysis: |
   {combined_content}
 
 github_url_finder: |
-  Given the following package URL, find the corresponding GitHub repository URL if it exists.
+  Given the following package URL and package name, find the corresponding GitHub repository URL if it exists.
         Package URL: {package_url}
+        Package Name: {name}
         
         Return the result in JSON format:
         {{
@@ -84,6 +85,7 @@ github_url_finder: |
         
         Only return a GitHub URL if you are confident it is the correct repository.
         If you are not sure, return null.
+        You should use both the package URL and the package name for your reasoning.
 
 license_standardize: |
   Convert the following license string to a standard SPDX identifier.

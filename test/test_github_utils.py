@@ -2,7 +2,7 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-import core.github_utils as github_utils
+from core import github_utils
 
 @pytest.mark.asyncio
 async def test_process_github_repository_github_license_file(monkeypatch):
@@ -131,3 +131,46 @@ def test_deduplicate_license_files():
     assert result.count("https://github.com/owner1/repo1/blob/main/subdir/LICENSE") == 1
     assert result.count("https://github.com/owner2/repo2/blob/main/LICENSE.txt") == 1  # 这里修正
     assert len(result) == 3
+
+@pytest.mark.asyncio
+async def test_find_github_url_from_package_url_success(monkeypatch):
+    # 模拟 USE_LLM 为 True
+    monkeypatch.setattr(github_utils, "USE_LLM", True)
+    # 构造 mock response
+    class MockResponse:
+        text = '{"github_url": "https://github.com/owner/repo", "confidence": 0.85}'
+    mock_model = AsyncMock()
+    mock_model.generate_content = AsyncMock(return_value=MockResponse())
+    # patch genai.GenerativeModel 返回 mock_model
+    monkeypatch.setattr(github_utils.genai, "GenerativeModel", lambda model: mock_model)
+    # 调用
+    result = await github_utils.find_github_url_from_package_url("https://pypi.org/project/xxx", name="xxx")
+    assert result == "https://github.com/owner/repo"
+
+@pytest.mark.asyncio
+async def test_find_github_url_from_package_url_low_confidence(monkeypatch):
+    monkeypatch.setattr(github_utils, "USE_LLM", True)
+    class MockResponse:
+        text = '{"github_url": "https://github.com/owner/repo", "confidence": 0.5}'
+    mock_model = AsyncMock()
+    mock_model.generate_content = AsyncMock(return_value=MockResponse())
+    monkeypatch.setattr(github_utils.genai, "GenerativeModel", lambda model: mock_model)
+    result = await github_utils.find_github_url_from_package_url("https://pypi.org/project/xxx", name="xxx")
+    assert result is None
+
+@pytest.mark.asyncio
+async def test_find_github_url_from_package_url_no_json(monkeypatch):
+    monkeypatch.setattr(github_utils, "USE_LLM", True)
+    class MockResponse:
+        text = "not a json"
+    mock_model = AsyncMock()
+    mock_model.generate_content = AsyncMock(return_value=MockResponse())
+    monkeypatch.setattr(github_utils.genai, "GenerativeModel", lambda model: mock_model)
+    result = await github_utils.find_github_url_from_package_url("https://pypi.org/project/xxx", name="xxx")
+    assert result is None
+
+@pytest.mark.asyncio
+async def test_find_github_url_from_package_url_llm_disabled(monkeypatch):
+    monkeypatch.setattr(github_utils, "USE_LLM", False)
+    result = await github_utils.find_github_url_from_package_url("https://pypi.org/project/xxx", name="xxx")
+    assert result is None
