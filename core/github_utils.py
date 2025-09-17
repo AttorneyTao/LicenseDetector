@@ -148,15 +148,24 @@ class GitHubAPI:
         
         for attempt in range(max_retries):
             try:
+                # 获取代理设置
+                proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
+                
                 # 配置超时和代理设置
-                async with AsyncClient(
-                    timeout=timeout,
-                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-                    proxies=os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
-                ) as client:
+                client_kwargs = {
+                    'timeout': timeout,
+                    'limits': httpx.Limits(max_keepalive_connections=5, max_connections=10)
+                }
+                
+                # 如果有代理设置，添加到client配置中
+                if proxy:
+                    client_kwargs['proxies'] = proxy
+                
+                async with AsyncClient(**client_kwargs) as client:
                     raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
                     logger.debug(f"Attempting to fetch: {raw_url} (attempt {attempt + 1}/{max_retries})")
                     
+                    # 发起请求（不在get方法中传递proxies参数）
                     response = await client.get(raw_url)
                     response.raise_for_status()
                     return response.text
