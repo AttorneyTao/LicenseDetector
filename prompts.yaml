@@ -10,13 +10,14 @@ license_analysis: |
         
         Please provide the analysis in JSON format with the following structure:
         {{
-            "main_licenses": ["license1", "license2"],  # List of main licenses using standard SPDX identifiers
+            "main_licenses": ["license1", "license2"],  
             "is_dual_licensed": true/false,
             "dual_license_relationship": "AND/OR/none",
             "has_third_party_licenses": true/false,
             "third_party_license_location": "section name or URL where third-party licenses can be found",
-            "license_relationship": "AND/OR/none",  # Relationship between main and third-party licenses
-            "confidence": 0.0-1.0
+            "license_relationship": "AND/OR/none",
+            "confidence": 0.0-1.0,
+            "explanations": "the reasons for your conclusions"
         }}
         
         Note: Always use standard SPDX identifiers for licenses. Common examples:
