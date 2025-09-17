@@ -18,7 +18,7 @@ import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential
 from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
-from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
+from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
 from core.llm_provider import get_llm_provider
 import platform
@@ -493,6 +493,104 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
     return None
 
 
+async def select_primary_license_file(license_files_detailed: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """
+    使用LLM选择最可能的主要项目级license文件
+
+    Args:
+        license_files_detailed: license文件详细信息列表，每个元素包含path, filename, url, directory
+
+    Returns:
+        选中的主要license文件信息，如果没有或选择失败则返回None
+    """
+    if not license_files_detailed:
+        return None
+    
+    if len(license_files_detailed) == 1:
+        return license_files_detailed[0]
+    
+    if not USE_LLM:
+        logger.info("LLM is disabled, using first license file as fallback")
+        return license_files_detailed[0]
+    
+    # 准备license文件信息给LLM
+    license_info_text = []
+    for i, file_info in enumerate(license_files_detailed, 1):
+        path = file_info['path']
+        directory = file_info['directory']
+        filename = file_info['filename']
+        
+        info_line = f"{i}. Path: {path}"
+        if directory:
+            info_line += f" (Directory: {directory})"
+        else:
+            info_line += " (Root directory)"
+        info_line += f" | Filename: {filename}"
+        license_info_text.append(info_line)
+    
+    license_files_info = "\n".join(license_info_text)
+    
+    prompt = PROMPTS["license_priority_selector"].format(license_files_info=license_files_info)
+    
+    llm_logger.info("License Priority Selection Request:")
+    llm_logger.info(f"Prompt: {prompt}")
+    
+    try:
+        provider = get_llm_provider()
+        response = provider.generate(prompt)
+        
+        llm_logger.info("License Priority Selection Response:")
+        llm_logger.info(f"Response: {response}")
+        
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                primary_license_path = result.get("primary_license_path")
+                confidence = result.get("confidence", 0.0)
+                reasoning = result.get("reasoning", "")
+                
+                llm_logger.info(f"Selected primary license: {primary_license_path} with confidence {confidence}")
+                llm_logger.info(f"Reasoning: {reasoning}")
+                
+                # 查找匹配的license文件
+                for file_info in license_files_detailed:
+                    if file_info['path'] == primary_license_path:
+                        logger.info(f"Successfully selected primary license file: {primary_license_path}")
+                        return file_info
+                
+                logger.warning(f"LLM selected path {primary_license_path} not found in license files list")
+            else:
+                llm_logger.warning("No JSON found in license priority selection response")
+    except Exception as e:
+        # 特别处理异步事件循环错误
+        if "This event loop is already running" in str(e):
+            llm_logger.warning("Event loop conflict detected - falling back to heuristic selection")
+        else:
+            llm_logger.error(f"Failed to select primary license file: {str(e)}", exc_info=True)
+    
+    # 降级处理：如果LLM选择失败，使用简单的启发式规则
+    logger.info("Falling back to heuristic license file selection")
+    
+    # 优先选择根目录的license文件
+    root_licenses = [f for f in license_files_detailed if not f['directory']]
+    if root_licenses:
+        # 在根目录license中，优先选择标准命名的文件
+        priority_names = ['license', 'license.txt', 'license.md', 'copying', 'copying.txt']
+        for priority_name in priority_names:
+            for file_info in root_licenses:
+                if file_info['filename'].lower() == priority_name:
+                    logger.info(f"Selected license file by heuristic: {file_info['path']}")
+                    return file_info
+        # 如果没有标准命名，返回第一个根目录license
+        logger.info(f"Selected first root license file: {root_licenses[0]['path']}")
+        return root_licenses[0]
+    
+    # 如果没有根目录license，返回第一个
+    logger.info(f"Selected first available license file: {license_files_detailed[0]['path']}")
+    return license_files_detailed[0]
+
+
 async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
     """
     First try text matching, fallback to Gemini LLM if no match.
@@ -612,7 +710,10 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
                 else:
                     version_resolve_logger.warning("No JSON found in version resolve response")
         except Exception as e:
-            version_resolve_logger.error(f"Failed to resolve version via LLM: {str(e)}", exc_info=True)
+            if "This event loop is already running" in str(e):
+                version_resolve_logger.warning("Event loop conflict detected during version resolution - falling back to default branch")
+            else:
+                version_resolve_logger.error(f"Failed to resolve version via LLM: {str(e)}", exc_info=True)
 
     # fallback
     version_resolve_logger.info("No version matched, using default branch")
@@ -1013,8 +1114,8 @@ async def process_github_repository(
                 license_content = license_info.get("content", "")
                 if license_content:
                     substep_logger.info("Analyzing license content")
-                    license_file_analysis = await analyze_license_content_async(license_content)
                     license_url = license_info.get("_links", {}).get("html") or license_info.get("download_url", "")
+                    license_file_analysis = await analyze_license_content_async(license_content, license_url)
         except Exception as e:
             substep_logger.warning(f"Error fetching license through GitHub API: {str(e)}")
 
@@ -1044,38 +1145,31 @@ async def process_github_repository(
             "tree": tree,
             "resolved_version": resolved_version
         }
-        license_files = find_license_files(path_map, sub_path, license_keywords)
-        substep_logger.info(f"Found {len(license_files)} license files in subpath")
+        license_files_detailed = find_license_files_detailed(path_map, sub_path, license_keywords)
+        substep_logger.info(f"Found {len(license_files_detailed)} license files in subpath")
 
-        # Step 10: Get license content for copyright analysis
+        # Step 10: Get license content for copyright analysis with intelligent selection
         substep_logger.info("Step 10/15: Getting license content for copyright analysis")
         license_content = None
         license_file_analysis_result = None
-        if license_files:
-            for license_file in license_files:
-                license_content = await api.get_file_content(owner, repo, license_file.split("/")[-1], resolved_version)
+        selected_license_file = None
+        
+        if license_files_detailed:
+            # 使用LLM选择主要的license文件
+            selected_license_file = await select_primary_license_file(license_files_detailed)
+            
+            if selected_license_file:
+                substep_logger.info(f"Selected primary license file: {selected_license_file['path']}")
+                license_content = await api.get_file_content(owner, repo, selected_license_file['path'], resolved_version)
                 if license_content:
-                    license_file_analysis_result = await analyze_license_content_async(license_content)
-                    if license_file_analysis_result and license_file_analysis_result.get("licenses"):
-                        break
+                    # 使用完整的GitHub URL
+                    license_file_analysis_result = await analyze_license_content_async(license_content, selected_license_file['url'])
+                    
             if license_file_analysis_result is not None and "thirdparty_dirs" not in license_file_analysis_result:
                 license_file_analysis_result["thirdparty_dirs"] = thirdparty_dirs
-            # 只要tree分析有结果，直接返回
+            # 只要分析有结果，直接返回
             if license_file_analysis_result and license_file_analysis_result.get("licenses"):
-                web_license_files = deduplicate_license_files(license_files, owner, repo, resolved_version)
-                # for license_file in license_files:
-                #     if license_file.startswith("https://raw.githubusercontent.com"):
-                #         parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
-                #         if len(parts) >= 3:
-                #             owner, repo, *path_parts = parts
-                #             path = "/".join(path_parts)
-                #             web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
-                #             web_license_files.append(web_url)
-                #         else:
-                #             web_license_files.append(license_file)
-                #     else:
-                #         web_license_files.append(license_file)
-                determination_reason = f"Found license files in {sub_path or 'root'}: {', '.join([url.split('/')[-1] for url in license_files])}"
+                determination_reason = f"Found license files in {sub_path or 'root'}, selected primary: {selected_license_file['filename']}"
                 copyright_notice = await construct_copyright_notice_async(
                     await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
                     None, license_content
@@ -1087,12 +1181,12 @@ async def process_github_repository(
                     "resolved_version": resolved_version,
                     "used_default_branch": used_default_branch,
                     "component_name": component_name,
-                    "license_files": "\n".join(web_license_files),
+                    "license_files": selected_license_file['url'],  # 返回选中的主要license文件URL
                     "license_analysis": license_file_analysis_result,
-                    "license_type": license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None,
+                    "license_type": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "has_license_conflict": False,
                     "readme_license": None,
-                    "license_file_license": license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None,
+                    "license_file_license": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "copyright_notice": copyright_notice,
                     "status": "success",
                     "license_determination_reason": determination_reason
@@ -1127,57 +1221,47 @@ async def process_github_repository(
 
         # Step 14: Search entire repo
         substep_logger.info("Step 14/15: Searching entire repository for licenses")
-        if not license_files:
-            license_files = find_license_files(path_map, "", license_keywords)
-            substep_logger.info(f"Found {len(license_files)} license files in entire repository")
+        if not license_files_detailed:
+            license_files_detailed = find_license_files_detailed(path_map, "", license_keywords)
+            substep_logger.info(f"Found {len(license_files_detailed)} license files in entire repository")
 
-            if license_files:
-                license_paths = [url.split("/")[-1] for url in license_files]
-                determination_reason = f"Found license files in repository root: {', '.join(license_paths)}"
-                license_file_analysis = None
-                for license_file in license_files:
-                    license_content = await api.get_file_content(owner, repo, license_file.split("/")[-1], resolved_version)
+            if license_files_detailed:
+                # 使用LLM选择主要的license文件
+                selected_license_file = await select_primary_license_file(license_files_detailed)
+                
+                if selected_license_file:
+                    substep_logger.info(f"Selected primary license file: {selected_license_file['path']}")
+                    determination_reason = f"Found license files in repository root, selected primary: {selected_license_file['filename']}"
+                    license_file_analysis = None
+                    license_content = await api.get_file_content(owner, repo, selected_license_file['path'], resolved_version)
                     if license_content:
-                        license_file_analysis = await analyze_license_content_async(license_content)
-                        if license_file_analysis and license_file_analysis.get("licenses"):
-                            break
-                if license_file_analysis is not None and "thirdparty_dirs" not in license_file_analysis:
-                    license_file_analysis["thirdparty_dirs"] = thirdparty_dirs
-                if license_file_analysis and license_file_analysis.get("licenses"):
-                    web_license_files = []
-                    for license_file in license_files:
-                        if license_file.startswith("https://raw.githubusercontent.com"):
-                            parts = license_file.replace("https://raw.githubusercontent.com/", "").split("/")
-                            if len(parts) >= 3:
-                                owner, repo, *path_parts = parts
-                                path = "/".join(path_parts)
-                                web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
-                                web_license_files.append(web_url)
-                            else:
-                                web_license_files.append(license_file)
-                        else:
-                            web_license_files.append(license_file)
-                    copyright_notice = await construct_copyright_notice_async(
-                        await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
-                        None, license_content
-                    )
-                    return {
-                        "input_url": input_url,
-                        "repo_url": repo_url,
-                        "input_version": version,
-                        "resolved_version": resolved_version,
-                        "used_default_branch": used_default_branch,
-                        "component_name": component_name,
-                        "license_files": "\n".join(web_license_files),
-                        "license_analysis": license_file_analysis,
-                        "license_type": license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None,
-                        "has_license_conflict": False,
-                        "readme_license": None,
-                        "license_file_license": license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None,
-                        "copyright_notice": copyright_notice,
-                        "status": "success",
-                        "license_determination_reason": determination_reason
-                    }
+                        license_file_analysis = await analyze_license_content_async(license_content, selected_license_file['url'])
+                        
+                    if license_file_analysis is not None and "thirdparty_dirs" not in license_file_analysis:
+                        license_file_analysis["thirdparty_dirs"] = thirdparty_dirs
+                        
+                    if license_file_analysis and license_file_analysis.get("licenses"):
+                        copyright_notice = await construct_copyright_notice_async(
+                            await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
+                            None, license_content
+                        )
+                        return {
+                            "input_url": input_url,
+                            "repo_url": repo_url,
+                            "input_version": version,
+                            "resolved_version": resolved_version,
+                            "used_default_branch": used_default_branch,
+                            "component_name": component_name,
+                            "license_files": selected_license_file['url'],  # 返回选中的主要license文件URL
+                            "license_analysis": license_file_analysis,
+                            "license_type": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
+                            "has_license_conflict": False,
+                            "readme_license": None,
+                            "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
+                            "copyright_notice": copyright_notice,
+                            "status": "success",
+                            "license_determination_reason": determination_reason
+                        }
 
         # Step 8: Find and analyze README（兜底，只有前面都没找到license时才执行）
         substep_logger.info("Step 8/15: Looking for README file")
@@ -1193,7 +1277,9 @@ async def process_github_repository(
             readme_content = await api.get_file_content(owner, repo, readme_path, resolved_version)
             if readme_content:
                 substep_logger.info("Analyzing README content for license information")
-                readme_license_analysis = await analyze_license_content_async(readme_content)
+                # 构建README文件的GitHub URL
+                readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
+                readme_license_analysis = await analyze_license_content_async(readme_content, readme_url)
                 if readme_license_analysis is not None and "thirdparty_dirs" not in readme_license_analysis:
                     readme_license_analysis["thirdparty_dirs"] = thirdparty_dirs
                 if readme_license_analysis and readme_license_analysis.get("licenses"):

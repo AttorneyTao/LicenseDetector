@@ -175,9 +175,17 @@ class QwenProvider(LLMProvider):
         # Since OpenAI client is async-only, we need to run it in an event loop
         try:
             loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            if loop.is_running():
+                # Event loop is already running, we can't use run_until_complete
+                raise RuntimeError("This event loop is already running")
+        except RuntimeError as e:
+            if "This event loop is already running" in str(e):
+                # Re-raise the specific error to be caught by callers
+                raise e
+            else:
+                # No event loop exists, create a new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
         
         return loop.run_until_complete(self.generate_async(prompt, **kwargs))
     

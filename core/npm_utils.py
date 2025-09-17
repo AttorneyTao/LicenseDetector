@@ -307,7 +307,9 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     readme_license = None
     if not license_type:
         logger.info("No license info in npm metadata, analyzing readme for license...")
-        license_analysis = await analyze_license_content_async(readme_content or "")
+        # 构建npm包的URL作为source_url
+        npm_source_url = f"https://www.npmjs.com/package/{pkg_name}/v/{resolved_version}"
+        license_analysis = await analyze_license_content_async(readme_content or "", npm_source_url)
         if license_analysis and license_analysis.get("licenses"):
             license_type = license_analysis["licenses"][0]
             readme_license = license_analysis["licenses"][0]

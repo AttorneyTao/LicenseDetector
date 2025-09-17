@@ -76,7 +76,7 @@ def find_readme(tree_items: List[Dict], sub_path: str = "") -> Optional[str]:
     return None
 
 
-def analyze_license_content(content: str) -> Dict[str, Any]:
+def analyze_license_content(content: str, source_url: Optional[str] = None) -> Dict[str, Any]:
     """
     Analyzes license content using the Gemini LLM.
 
@@ -113,7 +113,8 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
             "dual_license_relationship": "none",
             "license_relationship": "none",
             "confidence": 0.0,
-            "third_party_license_location": None
+            "third_party_license_location": None,
+            "source_url": source_url
         }
 
     try:
@@ -135,6 +136,8 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
                 # Convert main_licenses to licenses for consistency
                 if "main_licenses" in result:
                     result["licenses"] = result.pop("main_licenses")
+                # 添加source_url字段
+                result["source_url"] = source_url
                 return result
             else:
                 logger.warning("No JSON found in license analysis response")
@@ -144,7 +147,8 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
                     "dual_license_relationship": "none",
                     "license_relationship": "none",
                     "confidence": 0.0,
-                    "third_party_license_location": None
+                    "third_party_license_location": None,
+                    "source_url": source_url
                 }
     except Exception as e:
         logger.error(f"Failed to analyze license content: {str(e)}", exc_info=True)
@@ -154,11 +158,12 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
             "dual_license_relationship": "none",
             "license_relationship": "none",
             "confidence": 0.0,
-            "third_party_license_location": None
+            "third_party_license_location": None,
+            "source_url": source_url
         }
 
 
-async def analyze_license_content_async(content: str) -> Dict[str, Any]:
+async def analyze_license_content_async(content: str, source_url: Optional[str] = None) -> Dict[str, Any]:
     if not USE_LLM:
         logger.info("LLM analysis is disabled, returning empty analysis")
         return {
@@ -167,7 +172,8 @@ async def analyze_license_content_async(content: str) -> Dict[str, Any]:
             "dual_license_relationship": "none",
             "license_relationship": "none",
             "confidence": 0.0,
-            "third_party_license_location": None
+            "third_party_license_location": None,
+            "source_url": source_url
         }
     try:
         prompt = PROMPTS["license_analysis"].format(content=content)
@@ -183,6 +189,8 @@ async def analyze_license_content_async(content: str) -> Dict[str, Any]:
                 result = json.loads(json_match.group())
                 if "main_licenses" in result:
                     result["licenses"] = result.pop("main_licenses")
+                # 添加source_url字段
+                result["source_url"] = source_url
                 return result
             else:
                 logger.warning("No JSON found in license analysis response")
@@ -192,7 +200,8 @@ async def analyze_license_content_async(content: str) -> Dict[str, Any]:
                     "dual_license_relationship": "none",
                     "license_relationship": "none",
                     "confidence": 0.0,
-                    "third_party_license_location": None
+                    "third_party_license_location": None,
+                    "source_url": source_url
                 }
     except Exception as e:
         logger.error(f"Failed to analyze license content: {str(e)}", exc_info=True)
@@ -202,7 +211,8 @@ async def analyze_license_content_async(content: str) -> Dict[str, Any]:
             "dual_license_relationship": "none",
             "license_relationship": "none",
             "confidence": 0.0,
-            "third_party_license_location": None
+            "third_party_license_location": None,
+            "source_url": source_url
         }
 
 
@@ -263,7 +273,7 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
         if isinstance(item, dict):
             path = item.get("path", "")
             type_ = item.get("type", "")
-            url_logger.info(f"Path: {path}, Type: {type_}")
+            #url_logger.info(f"Path: {path}, Type: {type_}")
 
     for item in tree_items:
         # Ensure item is a dictionary
@@ -310,8 +320,8 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
                     owner = repo_parts[0]
                     repo = repo_parts[1]
 
-                    # Get just the filename from the path
-                    filename = path.split("/")[-1]
+                    # Use the full path for the URL construction
+                    file_path = path
 
                     # Log URL construction components
                     url_logger.info("URL Construction Components:")
@@ -320,10 +330,10 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
                     url_logger.info(f"Owner: {owner}")
                     url_logger.info(f"Repo: {repo}")
                     url_logger.info(f"Resolved version: {resolved_version}")
-                    url_logger.info(f"Filename: {filename}")
+                    url_logger.info(f"File path: {file_path}")
 
                     # Construct the GitHub web interface URL
-                    web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{filename}"
+                    web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{file_path}"
                     url_logger.info(f"Constructed URL: {web_url}")
 
                     results.append(web_url)
@@ -338,6 +348,102 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
     url_logger.info(f"Found {len(results)} license files")
     url_logger.info(f"Final results: {results}")
     logger.info(f"Found {len(results)} license files")
+    return results
+
+
+def find_license_files_detailed(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[Dict[str, str]]:
+    """
+    Finds license files in a repository tree and returns detailed information.
+
+    This function:
+    - Searches for files matching license keywords
+    - Returns detailed information including path, filename, and URL
+    - Supports searching in specific subpaths
+    - Logs search process and results
+
+    Args:
+        path_map (Dict[str, Any]): Repository tree structure
+            Must contain:
+            - tree: List of file/directory items
+            - resolved_version: Version being analyzed
+        sub_path (str): Subpath to search in
+        keywords (List[str]): Keywords to match against filenames
+
+    Returns:
+        List[Dict[str, str]]: List of license file information, each containing:
+            - path: Full path in repository
+            - filename: Just the filename
+            - url: GitHub web interface URL
+            - directory: Directory containing the file
+    """
+    logger.info(f"Searching for license files (detailed) in {sub_path or 'root'} with keywords: {keywords}")
+    url_logger = logging.getLogger('url_construction')
+    results = []
+    base_path = sub_path.rstrip("/")
+
+    # Ensure path_map is a dictionary and has a tree key
+    if not isinstance(path_map, dict) or "tree" not in path_map:
+        logger.warning(f"Invalid path map format: {path_map}")
+        return results
+
+    # Ensure tree is a list
+    tree_items = path_map.get("tree", [])
+    if not isinstance(tree_items, list):
+        logger.warning(f"Tree is not a list: {tree_items}")
+        return results
+
+    # Get the resolved version from the path_map
+    resolved_version = path_map.get("resolved_version", "main")
+    logger.info(f"Using resolved version for URL construction: {resolved_version}")
+
+    for item in tree_items:
+        # Ensure item is a dictionary
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("type") != "blob":
+            continue
+
+        path = item.get("path", "")
+        if not path:
+            continue
+
+        if base_path and not path.startswith(base_path):
+            continue
+
+        name = path.lower().split("/")[-1]
+
+        if any(keyword in name for keyword in keywords):
+            logger.debug(f"Found license file: {path}")
+
+            # Convert GitHub API URL to GitHub web interface URL
+            api_url = item.get("url", "")
+            web_url = ""
+            if api_url:
+                try:
+                    # Get the repository info from the API URL
+                    if "/repos/" in api_url:
+                        repo_parts = api_url.split("/repos/")[1].split("/")
+                        if len(repo_parts) >= 2:
+                            owner = repo_parts[0]
+                            repo = repo_parts[1]
+                            web_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{path}"
+                except Exception as e:
+                    logger.warning(f"Failed to convert API URL to web URL: {str(e)}")
+                    web_url = api_url  # Fallback
+
+            # Extract directory path
+            directory = "/".join(path.split("/")[:-1]) if "/" in path else ""
+            
+            file_info = {
+                "path": path,
+                "filename": path.split("/")[-1],
+                "url": web_url,
+                "directory": directory
+            }
+            results.append(file_info)
+
+    logger.info(f"Found {len(results)} license files (detailed)")
     return results
 
 

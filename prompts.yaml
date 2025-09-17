@@ -1,39 +1,47 @@
 license_analysis: |
-  Analyze the following text and determine:
-        1. What is the main license specified? Use standard SPDX identifiers (e.g., Apache-2.0, MIT, GPL-3.0, etc.)
-        2. Is this project dual licensed (e.g., MIT OR Apache-2.0)? If yes, what are the licenses and their relationship?
-        3. Are there any mentions of third-party components with different licenses? If yes, where can they be found (e.g., specific section or URL)?
-        4. What is the relationship between the main license(s) and third-party licenses?
-
-        If you find multiple licenses, determine their relationship (AND/OR) and concat them into a single SPDX expression.
-        
-        Text:
-        {content}
-        
-        Please provide the analysis in JSON format with the following structure:
-        {{
-            "main_licenses": ["SPDX expression"],  
-            "is_dual_licensed": true/false,
-            "dual_license_relationship": "AND/OR/none",
-            "has_third_party_licenses": true/false,
-            "third_party_license_location": "section name or URL where third-party licenses can be found",
-            "license_relationship": "AND/OR/none",
-            "confidence": 0.0-1.0,
-            "explanations": "the reasons for your conclusions"
-        }}
-        
-        Note: Always use standard SPDX identifiers for licenses. Common examples:
-        - Apache-2.0
-        - MIT
-        - GPL-2.0-or-later
-        - GPL-3.0-only
-        - LGPL-2.1-or-later
-        - LGPL-3.0-only
-        - BSD-2-Clause
-        - BSD-3-Clause
-        - ISC
-        - MPL-2.0
-        - AGPL-3.0
+  Analyze the following license text and determine the comprehensive licensing information.
+  
+  INSTRUCTIONS:
+  1. Identify the PRIMARY/MAIN license that governs the entire project/package
+  2. Identify any bundled/embedded third-party components with different licenses
+  3. Construct an accurate SPDX license expression that represents the complete licensing situation
+  
+  ANALYSIS APPROACH:
+  - Look for the main license text at the beginning (often Apache-2.0, MIT, GPL, etc.)
+  - Look for sections like "SUBCOMPONENTS", "bundled dependencies", "third-party", etc.
+  - Determine if third-party components are merely bundled/embedded (use AND) or provide alternative licensing options (use OR)
+  - For projects with bundled dependencies, the typical pattern is: MainLicense AND (Dep1License AND Dep2License AND ...)
+  
+  SPDX EXPRESSION RULES:
+  - Use AND when multiple licenses apply simultaneously (main project + bundled dependencies)
+  - Use OR when there are alternative licensing options 
+  - Use parentheses to group related licenses
+  - Examples:
+    * Simple: "Apache-2.0" 
+    * With bundled deps: "Apache-2.0 AND (MIT AND BSD-3-Clause AND CDDL-1.1)"
+    * Dual licensed: "MIT OR Apache-2.0"
+    * Complex: "Apache-2.0 AND (BSD-3-Clause AND MIT AND CDDL-1.1 AND EPL-1.0)"
+  
+  Text to analyze:
+  {content}
+  
+  Return the analysis in JSON format:
+  {{
+      "main_licenses": ["Primary SPDX license identifier"],  
+      "bundled_licenses": ["List of bundled/third-party SPDX identifiers"],
+      "spdx_expression": "Complete SPDX expression representing all licenses",
+      "is_dual_licensed": true/false,
+      "has_third_party_licenses": true/false,
+      "third_party_license_location": "section name describing where third-party licenses are documented",
+      "license_relationship": "AND/OR based on how licenses relate",
+      "confidence": 0.0-1.0,
+      "explanations": "detailed reasoning for the SPDX expression"
+  }}
+  
+  IMPORTANT: 
+  - Focus on creating an accurate SPDX expression that represents the complete licensing situation
+  - For projects with many bundled dependencies, ensure all significant licenses are represented
+  - Use standard SPDX identifiers: Apache-2.0, MIT, BSD-3-Clause, BSD-2-Clause, CDDL-1.1, EPL-1.0, GPL-2.0-only, etc.
 version_resolve: |
   You are a GitHub repository version resolver.
   Here is the list of all available branches and tags (choose only from these):
@@ -118,3 +126,36 @@ license_standardize: |
   - AGPL-3.0-only
   when there are multiple licenses, you should determine the relaitonship and compose a spdx license
   expression like Apache-2.0 AND (MIT OR BSD-3-Clause) OR GPL-2.0-only WITH ClasspathException.
+
+license_priority_selector: |
+  You are a license file analyzer for software projects. You need to determine which license file is most likely the PRIMARY/MAIN project-level license from a list of license files found in a repository.
+  
+  ANALYSIS CRITERIA:
+  1. **Location Priority**: Files in the root directory are typically more important than those in subdirectories
+  2. **Filename Priority**: Standard names like "LICENSE", "LICENSE.txt", "COPYING" are typically main project licenses
+  3. **Path Context**: License files in subdirectories may be for specific components/dependencies
+  4. **Size/Content Hints**: Main project licenses are typically comprehensive
+  
+  COMMON PATTERNS:
+  - Root level LICENSE/COPYING = Main project license
+  - Subdirectory licenses = Component/dependency licenses  
+  - Multiple root licenses = Potential dual licensing or outdated files
+  - Third-party/vendor directories = Bundled dependency licenses
+  
+  LICENSE FILES FOUND:
+  {license_files_info}
+  
+  Please analyze the above license files and determine which ONE is most likely the primary project-level license that governs the entire codebase.
+  
+  Return the result in JSON format:
+  {{
+      "primary_license_path": "full path of the most likely primary license file",
+      "confidence": 0.0-1.0,
+      "reasoning": "explanation of why this file was selected as the primary license"
+  }}
+  
+  IMPORTANT:
+  - You must select exactly ONE file as the primary license
+  - Consider both the file path and filename in your analysis
+  - Prefer root-level files over subdirectory files
+  - Prefer standard naming conventions (LICENSE, COPYING, etc.)
