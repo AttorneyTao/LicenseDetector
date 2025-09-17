@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from .config import GEMINI_CONFIG
 import google.generativeai as genai
+from .llm_provider import get_llm_provider
 from .utils import analyze_license_content, extract_copyright_info, analyze_license_content_async, find_top_level_thirdparty_dirs_local
 from bs4 import BeautifulSoup
 import tempfile
@@ -195,15 +196,15 @@ def _gemini_choose_version(user_input: Optional[str], versions: List[str], defau
         llm_logger.info(f"Prompt: {prompt}")
         version_resolve_logger.info("Version Resolve LLM Request:")
 
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = model.generate_content(prompt)
+        provider = get_llm_provider()
+        response = provider.generate(prompt)
         llm_logger.info("Version Resolve Response:")
-        llm_logger.info(f"Response: {response.text}")
+        llm_logger.info(f"Response: {response}")
         version_resolve_logger.info("Version Resolve LLM Response:")
-        version_resolve_logger.info(f"Response: {response.text}")
+        version_resolve_logger.info(f"Response: {response}")
 
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 resolved_version = result.get("resolved_version", default)

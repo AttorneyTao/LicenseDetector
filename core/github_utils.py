@@ -20,6 +20,7 @@ from core.npm_utils import process_npm_repository
 from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
+from core.llm_provider import get_llm_provider
 import platform
 from openai import AsyncOpenAI
 
@@ -466,14 +467,14 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
         llm_logger.info("GitHub URL Lookup Request:")
         llm_logger.info(f"Prompt: {prompt}")
         
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = model.generate_content(prompt)
+        provider = get_llm_provider()
+        response = provider.generate(prompt)
         
         llm_logger.info("GitHub URL Lookup Response:")
-        llm_logger.info(f"Response: {response.text}")
+        llm_logger.info(f"Response: {response}")
         
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 github_url = result.get("github_url")
@@ -592,15 +593,15 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
             llm_logger.info(f"Prompt: {prompt}")
             version_resolve_logger.info("Version Resolve LLM Request:")
 
-            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-            response = model.generate_content(prompt)
+            provider = get_llm_provider()
+            response = provider.generate(prompt)
             llm_logger.info("Version Resolve Response:")
-            llm_logger.info(f"Response: {response.text}")
+            llm_logger.info(f"Response: {response}")
             version_resolve_logger.info("Version Resolve LLM Response:")
-            version_resolve_logger.info(f"Response: {response.text}")
+            version_resolve_logger.info(f"Response: {response}")
 
-            if response.text:
-                json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+            if response:
+                json_match = re.search(r'\{.*\}', response, re.DOTALL)
                 if json_match:
                     result = json.loads(json_match.group())
                     resolved_version = result.get("resolved_version", default_branch)
@@ -1336,7 +1337,7 @@ def deduplicate_license_files(license_files: List[str], owner: str, repo: str, r
 
 async def find_github_url_from_package_url(package_url: str, name: Optional[str] = None) -> Optional[str]:
     """
-    使用 Qwen 百炼模型，根据 package_url 和 name 异步查找 GitHub 仓库链接
+    使用 LLM 提供商，根据 package_url 和 name 异步查找 GitHub 仓库链接
     """
     if not USE_LLM:
         logger.info("LLM is disabled, skipping GitHub URL lookup")
@@ -1346,25 +1347,18 @@ async def find_github_url_from_package_url(package_url: str, name: Optional[str]
     llm_logger.info("GitHub URL Lookup Request:")
     llm_logger.info(f"Prompt: {prompt}")
 
-    client = AsyncOpenAI(
-        api_key=QWEN_CONFIG["api_key"],
-        base_url=QWEN_CONFIG["base_url"],
-    )
+    provider = get_llm_provider()
 
     if platform.system() == "Windows":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
-        response = await client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=QWEN_CONFIG["model"],  # 统一使用配置的模型类型
-        )
+        response = await provider.generate_async(prompt)
         llm_logger.info("GitHub URL Lookup Response:")
-        llm_logger.info(f"Response: {response.model_dump_json()}")
+        llm_logger.info(f"Response: {response}")
 
-        content = response.choices[0].message.content if response.choices else ""
-        if content:
-            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 github_url = result.get("github_url")

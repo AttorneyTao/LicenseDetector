@@ -6,6 +6,7 @@ import logging
 import requests
 import yaml
 import google.generativeai as genai
+from .llm_provider import get_llm_provider
 from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -130,9 +131,8 @@ async def _standardize_license(license_info: Dict[str, Any]) -> str:
                 with open("prompts.yaml", 'r', encoding='utf-8') as f:
                     prompts = yaml.safe_load(f)
                 
-                # 初始化 Gemini
-                genai.configure(api_key=GEMINI_CONFIG["api_key"])
-                model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+                # 初始化 LLM Provider
+                provider = get_llm_provider()
                 
                 # 准备提示词
                 prompt = prompts["license_standardize"].format(
@@ -140,11 +140,11 @@ async def _standardize_license(license_info: Dict[str, Any]) -> str:
                 )
                 
                 # 调用模型
-                response = model.generate_content(prompt)
-                logger.debug(f"LLM raw response: {response.text}")
+                response = provider.generate(prompt)
+                logger.debug(f"LLM raw response: {response}")
                 
                 # 清理并解析响应
-                cleaned_response = response.text.strip()
+                cleaned_response = response.strip()
                 if cleaned_response.startswith("```"):
                     cleaned_response = "\n".join(cleaned_response.split("\n")[1:-1])
                     

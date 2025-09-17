@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Optional
 from .config import GEMINI_CONFIG, THIRD_PARTY_KEYWORDS
+from .llm_provider import get_llm_provider
 import google.generativeai as genai
 from dotenv import load_dotenv
 import yaml
@@ -118,17 +119,17 @@ def analyze_license_content(content: str) -> Dict[str, Any]:
     try:
         prompt = PROMPTS["license_analysis"].format(content=content)
 
-        # Generate content using the official client
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+        # Generate content using the LLM provider
+        provider = get_llm_provider()
         llm_logger = logging.getLogger('llm_interaction')
         llm_logger.info("License Analysis Request:")
         llm_logger.info(f"Prompt: {prompt}")
-        response = model.generate_content(prompt)
-        llm_logger.info(f"License Analysis Response:{response.text}")
+        response = provider.generate(prompt)
+        llm_logger.info(f"License Analysis Response:{response}")
 
         # Parse the response text into a dictionary
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 # Convert main_licenses to licenses for consistency
@@ -170,14 +171,14 @@ async def analyze_license_content_async(content: str) -> Dict[str, Any]:
         }
     try:
         prompt = PROMPTS["license_analysis"].format(content=content)
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
+        provider = get_llm_provider()
         llm_logger = logging.getLogger('llm_interaction')
         llm_logger.info("License Analysis Request:")
         llm_logger.info(f"Prompt: {prompt}")
-        response = await model.generate_content_async(prompt)
-        llm_logger.info(f"License Analysis Response:{response.text}")
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        response = await provider.generate_async(prompt)
+        llm_logger.info(f"License Analysis Response:{response}")
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 if "main_licenses" in result:
@@ -385,14 +386,14 @@ def extract_copyright_info(content: str) -> Optional[str]:
         llm_logger.info("Copyright Extraction Request:")
         llm_logger.info(f"Prompt: {prompt}")
 
-        model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-        response = model.generate_content(prompt)
+        provider = get_llm_provider()
+        response = provider.generate(prompt)
 
         llm_logger.info("Copyright Extraction Response:")
-        llm_logger.info(f"Response: {response.text}")
+        llm_logger.info(f"Response: {response}")
 
-        if response.text:
-            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 copyright_notice = result.get("copyright_notice")
@@ -452,14 +453,14 @@ def construct_copyright_notice(year: str, owner: str, repo: str, ref: str, compo
             llm_logger.info("Copyright Notice Construction Request:")
             llm_logger.info(f"Prompt: {prompt}")
 
-            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-            response = model.generate_content(prompt)
+            provider = get_llm_provider()
+            response = provider.generate(prompt)
 
             llm_logger.info("Copyright Notice Construction Response:")
-            llm_logger.info(f"Response: {response.text}")
+            llm_logger.info(f"Response: {response}")
 
-            if response.text:
-                text = response.text.strip()
+            if response:
+                text = response.strip()
                 if text and text.lower() != "none":
                     copyright_notice = text
                     llm_logger.info(f"Found copyright notice via LLM: {copyright_notice}")
@@ -511,12 +512,12 @@ async def construct_copyright_notice_async(year: str, owner: str, repo: str, ref
             prompt = PROMPTS["copyright_analysis"].format(combined_content=combined_content)
             llm_logger.info("Copyright Notice Construction Request:")
             llm_logger.info(f"Prompt: {prompt}")
-            model = genai.GenerativeModel(GEMINI_CONFIG["model"])
-            response = await model.generate_content_async(prompt)
+            provider = get_llm_provider()
+            response = await provider.generate_async(prompt)
             llm_logger.info("Copyright Notice Construction Response:")
-            llm_logger.info(f"Response: {response.text}")
-            if response.text:
-                text = response.text.strip()
+            llm_logger.info(f"Response: {response}")
+            if response:
+                text = response.strip()
                 if text and text.lower() != "none":
                     copyright_notice = text
                     llm_logger.info(f"Found copyright notice via LLM: {copyright_notice}")

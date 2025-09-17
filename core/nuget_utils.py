@@ -4,6 +4,7 @@ import logging
 import platform
 from openai import AsyncOpenAI
 from core.config import QWEN_CONFIG
+from core.llm_provider import get_llm_provider
 import yaml
 from bs4 import BeautifulSoup
 import json
@@ -76,31 +77,23 @@ async def get_license_type_by_llm(license_url: str, name: str = "", version: str
     logger.info(f"LLM 处理 license_url: {license_url}, 最终 URL: {final_url}, prompt 长度: {len(prompt)}")
     logger.info(f"LLM prompts:{prompt}")
 
-
-    client = AsyncOpenAI(
-        api_key=QWEN_CONFIG["api_key"],
-        base_url=QWEN_CONFIG["base_url"],
-    )
+    provider = get_llm_provider()
     if platform.system() == "Windows":
-
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
-        response = await client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=QWEN_CONFIG["model"],
-        )
+        response = await provider.generate_async(prompt)
         logger.info(f"LLM Response:{response}")
-        content = response.choices[0].message.content if response.choices else ""
+        
         # 解析 JSON 返回
         try:
-            result = json.loads(content)
+            result = json.loads(response)
             main_licenses = result.get("main_licenses")
             if main_licenses and isinstance(main_licenses, list) and main_licenses:
                 return main_licenses[0]
         except Exception:
-            logger.warning(f"LLM返回不是JSON格式: {content}")
-        license_type = content.strip().splitlines()[0] if content else ""
+            logger.warning(f"LLM返回不是JSON格式: {response}")
+        license_type = response.strip().splitlines()[0] if response else ""
         return license_type
     except Exception as e:
         logger.error(f"LLM 判断 license_type 失败: {e}", exc_info=True)

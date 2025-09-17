@@ -2,9 +2,34 @@ import os
 import yaml
 from dotenv import load_dotenv
 load_dotenv()
+
+# LLM Provider Configuration
+LLM_CONFIG = {
+    # Default provider: 'gemini' or 'qwen'
+    "provider": os.getenv("LLM_PROVIDER", "gemini"),
+    
+    "gemini": {
+        "api_key": os.getenv("GEMINI_API_KEY"),
+        "model": os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-05-20")
+    },
+    
+    "qwen": {
+        "api_key": os.getenv("DASHSCOPE_API_KEY"),
+        "base_url": os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        "model": os.getenv("QWEN_MODEL", "qwen-plus")
+    }
+}
+
+# Legacy configurations (for backward compatibility)
 GEMINI_CONFIG = {
     "api_key": os.getenv("GEMINI_API_KEY"),
     "model": "gemini-2.5-flash-preview-05-20"
+}
+
+QWEN_CONFIG = {
+    "api_key": os.getenv("DASHSCOPE_API_KEY"),
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen-plus"  # 统一配置模型类型
 }
 
 SCORE_THRESHOLD = 65

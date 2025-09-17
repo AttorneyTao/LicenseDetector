@@ -4,13 +4,15 @@ license_analysis: |
         2. Is this project dual licensed (e.g., MIT OR Apache-2.0)? If yes, what are the licenses and their relationship?
         3. Are there any mentions of third-party components with different licenses? If yes, where can they be found (e.g., specific section or URL)?
         4. What is the relationship between the main license(s) and third-party licenses?
+
+        If you find multiple licenses, determine their relationship (AND/OR) and concat them into a single SPDX expression.
         
         Text:
         {content}
         
         Please provide the analysis in JSON format with the following structure:
         {{
-            "main_licenses": ["license1", "license2"],  
+            "main_licenses": ["SPDX expression"],  
             "is_dual_licensed": true/false,
             "dual_license_relationship": "AND/OR/none",
             "has_third_party_licenses": true/false,
@@ -53,6 +55,7 @@ copyright_extract: |
   Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices.
   If found, return the exact copyright notice.
   If not found, return null.
+  If you found multiple copyright notices, return them all, separated by semicolons.
   terms like "Copyright [yyyy] [name of copyright owner]" is a template, not a real copyright notice.
   and you should pay attention to distinguish between real copyright notices and those copyright of the license text.
   Do not include any other information or explanation.
@@ -69,7 +72,7 @@ copyright_analysis: |
  terms like "Copyright [yyyy] [name of copyright owner]" is a template, not a real copyright notice, you should not return it.
  terms like "Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>" "Copyright (C) 1989, 1991 Free Software Foundation, Inc. <https://fsf.org/>" are the copyright notice of the license text, not 
  the copyright notice of the software. You should not return it either.
-
+  If you found multiple copyright notices, return them all, separated by semicolons.
   Text to analyze:
   {combined_content}
 
