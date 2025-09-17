@@ -279,6 +279,33 @@ async def main_async():
         logger.info("生成 thirdparty_dirs 列...")
         output_df = extract_thirdparty_dirs_column(output_df)
 
+        # 根据 thirdparty_dirs 追加 " AND Others"
+        logger.info("根据 thirdparty_dirs 更新 concluded_license...")
+        def _has_thirdparty(row):
+            # 优先检查 license_analysis.thirdparty_dirs
+            analysis = row.get("license_analysis")
+            if isinstance(analysis, dict):
+                dirs = analysis.get("thirdparty_dirs")
+                if isinstance(dirs, list) and len(dirs) > 0:
+                    return True
+            # 其次检查已生成的 thirdparty_dirs 列（非空字符串视为包含）
+            tp_col = row.get("thirdparty_dirs")
+            return isinstance(tp_col, str) and tp_col.strip() != ""
+
+        def _append_others(expr: str) -> str:
+            expr = (expr or "").strip()
+            if not expr:
+                return "Others"
+            if not expr.endswith(" AND Others"):
+                return f"{expr} AND Others"
+            return expr
+
+        output_df["concluded_license"] = output_df.apply(
+            lambda r: _append_others(r.get("concluded_license"))
+            if _has_thirdparty(r) else r.get("concluded_license"),
+            axis=1
+        )
+        
         # 重排列顺序
         logger.info("重排列顺序...")
         # 获取实际存在的列（配置的列和实际数据的交集）

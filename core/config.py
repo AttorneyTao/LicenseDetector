@@ -10,7 +10,7 @@ GEMINI_CONFIG = {
 SCORE_THRESHOLD = 65
 
 # 添加最大并发数配置
-MAX_CONCURRENCY = 20
+MAX_CONCURRENCY = 5
 
 # 结果列的显示顺序配置
 RESULT_COLUMNS_ORDER = [
@@ -44,5 +44,5 @@ THIRD_PARTY_KEYWORDS = [
 QWEN_CONFIG = {
     "api_key": os.getenv("DASHSCOPE_API_KEY"),
     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "model": "qwen-max"  # 统一配置模型类型
+    "model": "qwen-plus"  # 统一配置模型类型
 }

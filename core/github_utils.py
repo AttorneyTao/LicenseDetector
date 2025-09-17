@@ -142,10 +142,45 @@ class GitHubAPI:
             )
             return response.json()
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
-        async with AsyncClient() as client:
-            raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
-            response = await client.get(raw_url)
-            return response.text
+        """获取文件内容，包含超时和重试机制"""
+        max_retries = 3
+        timeout = 30.0
+        
+        for attempt in range(max_retries):
+            try:
+                # 配置超时和代理设置
+                async with AsyncClient(
+                    timeout=timeout,
+                    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+                    proxies=os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
+                ) as client:
+                    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+                    logger.debug(f"Attempting to fetch: {raw_url} (attempt {attempt + 1}/{max_retries})")
+                    
+                    response = await client.get(raw_url)
+                    response.raise_for_status()
+                    return response.text
+                    
+            except httpx.ConnectTimeout as e:
+                logger.warning(f"Connection timeout on attempt {attempt + 1}/{max_retries} for {path}: {str(e)}")
+                if attempt == max_retries - 1:  # 最后一次尝试
+                    logger.error(f"All {max_retries} attempts failed for {path}")
+                    return None
+                # 等待后重试
+                await asyncio.sleep(2 ** attempt)  # 指数退避
+                
+            except httpx.RequestError as e:
+                logger.warning(f"Request error on attempt {attempt + 1}/{max_retries} for {path}: {str(e)}")
+                if attempt == max_retries - 1:
+                    return None
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                logger.error(f"Unexpected error fetching {path}: {str(e)}")
+                return None
+
+        return None
+
     def get_repo_info(self, owner: str, repo: str) -> Dict:
         """
         Retrieves detailed information about a GitHub repository.
