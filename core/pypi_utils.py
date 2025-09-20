@@ -222,17 +222,13 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
         if not repo_url and "github.com" in (info.get("home_page") or ""):
             repo_url = info["home_page"]
             
-        # 7. 调用 GitHub API 补充信息（如果有 GitHub 仓库）
-        github_fields = {
-            "license_files": None,
-            "license_analysis": None,
-            "has_license_conflict": None,
-            "readme_license": None,
-            "license_file_license": None
-        }
+        # 7. 调用 GitHub API 获取完整信息（如果有 GitHub 仓库）
+        github_result = None
+        use_github_result = False
         
         # 在调用 GitHub API 时也添加重试逻辑
         if repo_url and "github.com" in repo_url:
+            logger.info(f"Found GitHub repository: {repo_url}, using GitHub analysis as primary source")
             for attempt in range(3):  # GitHub API 重试3次
                 try:
                     from core.github_utils import process_github_repository, GitHubAPI
@@ -242,11 +238,9 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
                         repo_url,
                         resolved_version
                     )
-                    if github_result and github_result.get("status") != "error":
-                        for key in ["license_analysis", "has_license_conflict", 
-                                  "readme_license", "license_file_license"]:
-                            if github_result.get(key) is not None:
-                                github_fields[key] = github_result[key]
+                    if github_result and github_result.get("status") == "success":
+                        use_github_result = True
+                        logger.info("Successfully obtained GitHub analysis results, will use as primary source")
                     break  # 成功则退出重试
                 except Exception as e:
                     logger.warning(f"GitHub API attempt {attempt + 1} failed: {str(e)}")
@@ -255,15 +249,53 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
                     else:
                         time.sleep(attempt * 2)  # 重试等待
                         
-        # 8. 处理版权信息
-        author = info.get("author", "")
-        if not author:
-            author = f"{package_name} original author and authors"
-        
-        copyright_notice = extract_copyright_info(readme_content)
-        if not copyright_notice:
-            current_year = datetime.now(timezone.utc).year
-            copyright_notice = f"Copyright (c) {current_year} {author}"
+        # 8. 处理版权信息和许可证信息
+        if use_github_result and github_result:
+            # 如果有GitHub结果，优先使用GitHub的信息
+            logger.info("Using GitHub analysis results as primary source")
+            
+            # 基础信息保持PyPI的
+            final_license_type = github_result.get("license_type", license_type)
+            final_license_files = github_result.get("license_files", f"https://pypi.org/project/{package_name}/{resolved_version}/#files")
+            final_license_analysis = github_result.get("license_analysis")
+            final_has_license_conflict = github_result.get("has_license_conflict")
+            final_readme_license = github_result.get("readme_license")
+            final_license_file_license = github_result.get("license_file_license")
+            final_copyright_notice = github_result.get("copyright_notice")
+            
+            # 如果GitHub没有找到版权信息，使用PyPI的author信息构建
+            if not final_copyright_notice:
+                author = info.get("author", "")
+                if not author:
+                    author = f"{package_name} original author and authors"
+                current_year = datetime.now(timezone.utc).year
+                final_copyright_notice = f"Copyright (c) {current_year} {author}"
+                
+            license_determination_reason = "Analyzed via GitHub repository (primary source)"
+            
+        else:
+            # 没有GitHub结果或GitHub分析失败，使用PyPI信息
+            logger.info("Using PyPI analysis results as primary source")
+            
+            final_license_type = license_type
+            final_license_files = f"https://pypi.org/project/{package_name}/{resolved_version}/#files"
+            final_license_analysis = None
+            final_has_license_conflict = None
+            final_readme_license = None
+            final_license_file_license = None
+            
+            # 处理版权信息
+            author = info.get("author", "")
+            if not author:
+                author = f"{package_name} original author and authors"
+            
+            copyright_notice = extract_copyright_info(readme_content)
+            if not copyright_notice:
+                current_year = datetime.now(timezone.utc).year
+                copyright_notice = f"Copyright (c) {current_year} {author}"
+            final_copyright_notice = copyright_notice
+            
+            license_determination_reason = "Fetched from PyPI registry"
         
         # 9. 返回结果
         result = {
@@ -273,19 +305,23 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             "resolved_version": resolved_version,
             "used_default_branch": version is None,
             "component_name": package_name,
-            "license_files": f"https://pypi.org/project/{package_name}/{resolved_version}/#files",
-            "license_analysis": github_fields["license_analysis"],
-            "license_type": license_type,
-            "has_license_conflict": github_fields["has_license_conflict"],
-            "readme_license": github_fields["readme_license"],
-            "license_file_license": github_fields["license_file_license"],
-            "copyright_notice": copyright_notice,
+            "license_files": final_license_files,
+            "license_analysis": final_license_analysis,
+            "license_type": final_license_type,
+            "has_license_conflict": final_has_license_conflict,
+            "readme_license": final_readme_license,
+            "license_file_license": final_license_file_license,
+            "copyright_notice": final_copyright_notice,
             "status": "success",
-            "license_determination_reason": "Fetched from PyPI registry",
+            "license_determination_reason": license_determination_reason,
             "readme": readme_content[:5000] if readme_content else None
         }
         
         logger.info(f"Processing completed for PyPI package: {package_name}@{resolved_version}")
+        if use_github_result:
+            logger.info(f"Final result based on GitHub analysis from: {repo_url}")
+        else:
+            logger.info("Final result based on PyPI metadata")
         return result
         
     except Exception as e:
