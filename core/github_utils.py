@@ -1,3 +1,4 @@
+
 from datetime import datetime
 import os
 import logging
@@ -40,6 +41,12 @@ with open("prompts.yaml", "r", encoding="utf-8") as f:
 
 logger = logging.getLogger('main')
 llm_logger = logging.getLogger('llm_interaction')
+def normalize_github_url(url: str) -> str:
+    """如果是 github.com/xxx/yyy 但没有协议头，自动补全为 https://github.com/xxx/yyy"""
+    url = url.strip()
+    if url.startswith("github.com/"):
+        return "https://" + url
+    return url
 
 class GitHubAPI:
     """
@@ -128,19 +135,25 @@ class GitHubAPI:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
-        异步请求处理，包含速率限制处理
+        异步请求处理，包含速率限制处理和自动重定向
         """
         url = f"{self.BASE_URL}{endpoint}"
         logger.debug(f"Making request to: {url}")
         if params:
             logger.debug(f"Request parameters: {params}")
         
-        async with AsyncClient(timeout=30.0) as client:
+        async with AsyncClient(timeout=30.0, follow_redirects=True) as client:
             response = await client.get(
                 url, 
                 params=params,
                 headers=self.headers
             )
+            # 如果不是 2xx，记录并抛出异常
+            if response.status_code in (301, 302, 307, 308):
+                logger.warning(f"Redirected ({response.status_code}) to: {response.headers.get('location')}")
+            if not (200 <= response.status_code < 300):
+                logger.error(f"GitHub API request failed: {response.status_code} {response.text}")
+                response.raise_for_status()
             return response.json()
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
         """获取文件内容，包含超时和重试机制"""
@@ -626,9 +639,17 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
     version_resolve_logger.info(f"Repository default branch: {default_branch}")
 
     # Get all branches and tags
-    branches = await api.get_branches(owner, repo)  # 添加 await
-    tags = await api.get_tags(owner, repo)  # 添加 await，并确保 get_tags 也是异步的
-    candidate_versions = [b["name"] for b in branches] + [t["name"] for t in tags]
+    branches = await api.get_branches(owner, repo)
+    tags = await api.get_tags(owner, repo)
+    def extract_name(item):
+        if isinstance(item, dict) and "name" in item:
+            return item["name"]
+        elif isinstance(item, str):
+            return item
+        return None
+    branch_names = [extract_name(b) for b in branches]
+    tag_names = [extract_name(t) for t in tags]
+    candidate_versions = [n for n in branch_names if n] + [n for n in tag_names if n]
     version_resolve_logger.info(f"Candidate versions: {candidate_versions}")
 
     # No version specified, use default branch
@@ -721,6 +742,7 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
 
 
 def parse_github_url(url: str) -> Tuple[str, str, Kind]:
+    url = normalize_github_url(url)
     """
     Parses a GitHub URL into its components.
 

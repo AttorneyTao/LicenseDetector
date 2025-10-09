@@ -125,7 +125,8 @@ license_standardize: |
   - MPL-2.0
   - AGPL-3.0-only
   when there are multiple licenses, you should determine the relaitonship and compose a spdx license
-  expression like Apache-2.0 AND (MIT OR BSD-3-Clause) OR GPL-2.0-only WITH ClasspathException.
+  expression like Apache-2.0 AND (MIT OR BSD-3-Clause) OR GPL-2.0-only WITH ClasspathException, if you are unsure about the relaitonship between
+  licenses, use AND to link them.
 
 license_priority_selector: |
   You are a license file analyzer for software projects. You need to determine which license file is most likely the PRIMARY/MAIN project-level license from a list of license files found in a repository.

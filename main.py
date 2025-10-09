@@ -154,7 +154,9 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     running_tasks += 1
                     logger.info(f"当前并发任务数: {running_tasks}")
 
+                    from core.github_utils import normalize_github_url
                     url = row["github_url"]
+                    url = normalize_github_url(url)
                     version = row.get("version")
                     name = row.get("name", None)
 
