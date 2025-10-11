@@ -61,9 +61,9 @@ RESULT_COLUMNS_ORDER = [
 
 THIRD_PARTY_KEYWORDS = [
     "thirdparty", "third_party", "third-party",
-    "vendor", "external", "deps", "libraries", "lib-vendor", "dependencies",
+    "vendor", "external", "deps", "lib-vendor", "dependencies",
     "3rdparty", "3rd_party", "3rd-party",
-    "modules", "submodules", "contrib", "extern", "externals"
+     "extern", "externals"
 ]
 
 QWEN_CONFIG = {

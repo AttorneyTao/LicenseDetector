@@ -64,7 +64,9 @@ copyright_extract: |
   If found, return the exact copyright notice.
   If not found, return null.
   If you found multiple copyright notices, return them all, separated by semicolons.
-  terms like "Copyright [yyyy] [name of copyright owner]" is a template, not a real copyright notice.
+  exact term:"Copyright [yyyy] [name of copyright owner]" is a template of some license, not a real copyright notice, you should not return it.
+  terms like "Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>" "Copyright (C) 1989, 1991 Free Software Foundation, Inc. <https://fsf.org/>" are the copyright notice of the license text, not 
+  the copyright notice of the software. You should not return it either.
   and you should pay attention to distinguish between real copyright notices and those copyright of the license text.
   Do not include any other information or explanation.
   Text:
@@ -76,11 +78,24 @@ copyright_extract: |
   }}
 
 copyright_analysis: |
- Analyze the following text and extract ONLY the copyright information. Return ONLY the copyright notice if found, or 'None' if no copyright notice is found. Do not include any other information or explanation.
- terms like "Copyright [yyyy] [name of copyright owner]" is a template, not a real copyright notice, you should not return it.
- terms like "Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>" "Copyright (C) 1989, 1991 Free Software Foundation, Inc. <https://fsf.org/>" are the copyright notice of the license text, not 
- the copyright notice of the software. You should not return it either.
-  If you found multiple copyright notices, return them all, separated by semicolons.
+  Analyze the following text and extract ONLY the copyright information. Return ONLY the exact copyright notice as it appears in the text, or 'None' if no copyright notice is found. Do not include any other information or explanation.
+  
+  INSTRUCTIONS:
+  1. Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices
+  2. Return the EXACT copyright notice as it appears in the text, including the copyright symbol, year, and owner name
+  3. Do not interpret or modify the copyright notice in any way
+  4. If there are multiple copyright notices, return them all separated by semicolons
+  5. Do not return template text like "Copyright [yyyy] [name of copyright owner]" for that's a template of some license, not a real copyright notice
+  6. Do not return license text copyright notices like "Copyright © 2007 Free Software Foundation, Inc. <https://fsf.org/>" "Copyright (C) 1989, 1991 Free Software Foundation, Inc. <https://fsf.org/>" for that's a template too.
+  
+  EXAMPLES:
+  
+  Text contains: "Copyright © 2020 John Doe; Copyright © 2019 Jane Smith"
+  Return: "Copyright © 2020 John Doe; Copyright © 2019 Jane Smith"
+  
+  Text contains: "Copyright [yyyy] [name of copyright owner]"
+  Return: "None"
+  
   Text to analyze:
   {combined_content}
 

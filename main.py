@@ -150,6 +150,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
         async def sem_task(row, index):
             nonlocal last_save_time, running_tasks
             async with sem:
+                name = None  # 保证异常时也能访问 name
                 try:
                     running_tasks += 1
                     logger.info(f"当前并发任务数: {running_tasks}")

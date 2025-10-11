@@ -43,6 +43,8 @@ logger = logging.getLogger('main')
 llm_logger = logging.getLogger('llm_interaction')
 def normalize_github_url(url: str) -> str:
     """如果是 github.com/xxx/yyy 但没有协议头，自动补全为 https://github.com/xxx/yyy"""
+    if not isinstance(url, str):
+        return "" if url is None else str(url)
     url = url.strip()
     if url.startswith("github.com/"):
         return "https://" + url
@@ -462,7 +464,7 @@ def find_github_url_from_package_url(package_url: str) -> Optional[str]:
         return None
         
     try:
-        # prompt = f"""
+        # prompt = """
         # Given the following package URL, find the corresponding GitHub repository URL if it exists.
         # Package URL: {package_url}
         
@@ -1136,8 +1138,38 @@ async def process_github_repository(
                 license_content = license_info.get("content", "")
                 if license_content:
                     substep_logger.info("Analyzing license content")
+                    # 解码Base64编码的license内容
+                    import base64
+                    try:
+                        license_content = base64.b64decode(license_content).decode('utf-8')
+                    except Exception as e:
+                        substep_logger.warning(f"Failed to decode base64 license content: {str(e)}")
                     license_url = license_info.get("_links", {}).get("html") or license_info.get("download_url", "")
                     license_file_analysis = await analyze_license_content_async(license_content, license_url)
+                    # 如果LLM分析成功，直接返回结果
+                    if license_file_analysis and license_file_analysis.get("licenses"):
+                        determination_reason = f"License determined via GitHub API and LLM analysis"
+                        copyright_notice = await construct_copyright_notice_async(
+                            await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
+                            None, license_content
+                        )
+                        return {
+                            "input_url": input_url,
+                            "repo_url": repo_url,
+                            "input_version": version,
+                            "resolved_version": resolved_version,
+                            "used_default_branch": used_default_branch,
+                            "component_name": component_name,
+                            "license_type": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis["licenses"] else None),
+                            "license_files": license_url,
+                            "license_analysis": license_file_analysis,
+                            "has_license_conflict": False,
+                            "readme_license": None,
+                            "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
+                            "copyright_notice": copyright_notice,
+                            "status": "success",
+                            "license_determination_reason": determination_reason
+                        }
         except Exception as e:
             substep_logger.warning(f"Error fetching license through GitHub API: {str(e)}")
 
@@ -1235,7 +1267,7 @@ async def process_github_repository(
                 "license_analysis": license_file_analysis,
                 "has_license_conflict": False,
                 "readme_license": None,
-                "license_file_license": None,
+                "license_file_license": license_type,  # 添加这行以确保license_file_license被设置
                 "copyright_notice": copyright_notice,
                 "status": "success",
                 "license_determination_reason": determination_reason
@@ -1323,7 +1355,7 @@ async def process_github_repository(
                         "license_type": readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None,
                         "has_license_conflict": False,
                         "readme_license": readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None,
-                        "license_file_license": None,
+                        "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None,  # 从README中获取的许可证
                         "copyright_notice": copyright_notice,
                         "status": "success",
                         "license_determination_reason": determination_reason
@@ -1346,8 +1378,8 @@ async def process_github_repository(
             readme_content, None
         )
         return {
-            "input_url": input_url,
-            "repo_url": repo_url,
+            "input_url": github_url,
+            "repo_url": github_url,
             "input_version": version,
             "resolved_version": resolved_version,
             "used_default_branch": used_default_branch,
@@ -1357,7 +1389,7 @@ async def process_github_repository(
             "license_type": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,
             "has_license_conflict": False,
             "readme_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,
-            "license_file_license": None,
+            "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,  # 从README中获取的许可证
             "copyright_notice": copyright_notice,
             "status": "success",
             "license_determination_reason": determination_reason
