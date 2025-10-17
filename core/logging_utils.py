@@ -59,7 +59,14 @@ def setup_logging():
     npm_logger.setLevel(logging.INFO)
     npm_handler = logging.FileHandler(r'logs/npm.log', encoding='utf-8')
     npm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    npm_logger.addHandler(version_resolve_handler)
+    npm_logger.addHandler(npm_handler)
+
+    # Configure maven logging
+    maven_logger = logging.getLogger('maven_utils')
+    maven_logger.setLevel(logging.INFO)
+    maven_handler = logging.FileHandler(r'logs/maven.log', encoding='utf-8')
+    maven_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    maven_logger.addHandler(maven_handler)
 
 
     return {
@@ -68,5 +75,6 @@ def setup_logging():
         "llm": llm_logger,
         "substep": substep_logger,
         "version_resolve": version_resolve_logger,
-        "npm": npm_logger
+        "npm": npm_logger,
+        "maven": maven_logger
     }

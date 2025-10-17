@@ -6,7 +6,7 @@
 """
 
 import asyncio
-from core.maven_utils import get_license_from_maven_url
+from core.maven_utils import analyze_maven_repository_url
 import json
 
 
@@ -19,7 +19,7 @@ async def test_hadoop_client():
     print("⏳ 开始分析...")
     
     try:
-        result = await get_license_from_maven_url(test_url)
+        result = await analyze_maven_repository_url(test_url)
         
         if result:
             print("✅ 分析成功!")

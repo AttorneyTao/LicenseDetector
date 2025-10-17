@@ -3,7 +3,7 @@ import os
 import logging
 import platform
 from openai import AsyncOpenAI
-from core.config import QWEN_CONFIG
+from core.config import LLM_CONFIG
 from core.llm_provider import get_llm_provider
 import yaml
 from bs4 import BeautifulSoup

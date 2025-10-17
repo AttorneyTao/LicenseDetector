@@ -7,10 +7,9 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
-from .config import GEMINI_CONFIG
-import google.generativeai as genai
+from .config import LLM_CONFIG
 from .llm_provider import get_llm_provider
-from .utils import analyze_license_content, extract_copyright_info, analyze_license_content_async, find_top_level_thirdparty_dirs_local
+from .utils import analyze_license_content, extract_copyright_info, extract_copyright_info_async, analyze_license_content_async, find_top_level_thirdparty_dirs_local
 from bs4 import BeautifulSoup
 import tempfile
 import shutil
@@ -225,12 +224,24 @@ def _gemini_choose_version(user_input: Optional[str], versions: List[str], defau
 
 def fetch_npm_readme_simple(pkg_name, version):
     url = f"https://www.npmjs.com/package/{pkg_name}/v/{version}?activeTab=readme"
-    resp = requests.get(url)
-    soup = BeautifulSoup(resp.text, "html.parser")
-    # 直接提取全部文本
-    text = soup.get_text(separator="\n")
-    # 可选：去掉前后空行
-    return text.strip()
+    try:
+        resp = requests.get(url, timeout=10)
+        # 检查响应状态码
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # 直接提取全部文本
+            text = soup.get_text(separator="\n")
+            # 可选：去掉前后空行
+            return text.strip()
+        else:
+            npm_logger.warning(f"Failed to fetch README from {url}, status code: {resp.status_code}")
+            return None
+    except requests.exceptions.RequestException as e:
+        npm_logger.warning(f"Error fetching README from {url}: {str(e)}")
+        return None
+    except Exception as e:
+        npm_logger.warning(f"Unexpected error fetching README from {url}: {str(e)}")
+        return None
 
 # ---------------------------------------------------------------------------
 # Main processor (public API)
@@ -341,7 +352,12 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     else:
         author = ""
     
-    copyright_notice = extract_copyright_info(readme_content or "")
+    # Prefer async copyright extraction since we're in async context
+    try:
+        copyright_notice = await extract_copyright_info_async(readme_content or "")
+    except Exception:
+        # Fallback to sync version if async extraction fails for any reason
+        copyright_notice = extract_copyright_info(readme_content or "")
     logger.debug(f"Copyright notice: {copyright_notice}")
 
     if not copyright_notice:

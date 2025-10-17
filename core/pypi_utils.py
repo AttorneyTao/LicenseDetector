@@ -5,7 +5,6 @@ import time
 import logging
 import requests
 import yaml
-import google.generativeai as genai
 from .llm_provider import get_llm_provider
 from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter
@@ -13,8 +12,8 @@ from urllib3.util.retry import Retry
 from urllib3.exceptions import InsecureRequestWarning
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
-from .utils import extract_copyright_info  # 添加这行导入
-from .config import GEMINI_CONFIG, SCORE_THRESHOLD  # 修改导入
+from .utils import extract_copyright_info, extract_copyright_info_async  # 添加这行导入
+from .config import LLM_CONFIG, SCORE_THRESHOLD  # 修改导入
 
 # 日志设置
 logger = logging.getLogger('main')
@@ -284,12 +283,26 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             final_readme_license = None
             final_license_file_license = None
             
+            # 分析 README 中的许可证信息
+            if readme_content:
+                try:
+                    from core.utils import analyze_license_content_async
+                    readme_license_analysis = await analyze_license_content_async(readme_content)
+                    if readme_license_analysis and readme_license_analysis.get("licenses"):
+                        final_readme_license = readme_license_analysis.get("spdx_expression") if readme_license_analysis else None
+                        final_license_analysis = readme_license_analysis
+                except Exception as e:
+                    logger.warning(f"Failed to analyze README license content: {str(e)}")
+            
             # 处理版权信息
             author = info.get("author", "")
             if not author:
                 author = f"{package_name} original author and authors"
             
-            copyright_notice = extract_copyright_info(readme_content)
+            try:
+                copyright_notice = await extract_copyright_info_async(readme_content)
+            except Exception:
+                copyright_notice = extract_copyright_info(readme_content)
             if not copyright_notice:
                 current_year = datetime.now(timezone.utc).year
                 copyright_notice = f"Copyright (c) {current_year} {author}"

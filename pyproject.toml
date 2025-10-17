@@ -23,6 +23,7 @@ dependencies = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
     "openai>=1.106.1",
+    "aiohttp>=3.13.0",
 ]
 
 [build-system]

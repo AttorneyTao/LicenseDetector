@@ -38,7 +38,7 @@ import google.generativeai as genai
 #=============================================================================
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
-from core.config import GEMINI_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
+from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column
 from core.go_utils import process_go_package, get_github_url_from_pkggo
 
@@ -76,15 +76,35 @@ sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
 
 
-# Validate Gemini API configuration only if LLM is enabled
+# Validate LLM API configuration only if LLM is enabled
 if USE_LLM:
-    if not GEMINI_CONFIG["api_key"]:
-        logger.error("GEMINI_API_KEY environment variable not set")
-        raise ValueError("GEMINI_API_KEY environment variable not set")
+    # Get the current provider from LLM_CONFIG
+    provider = LLM_CONFIG.get("provider", "gemini")
     
-    # Initialize Gemini client
-    genai.configure(api_key=GEMINI_CONFIG["api_key"])
-    logger.info(f"Initialized Gemini API with model: {GEMINI_CONFIG['model']}")
+    if provider.lower() == "gemini":
+        gemini_config = LLM_CONFIG.get("gemini", {})
+        api_key = gemini_config.get("api_key") or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            logger.error("GEMINI_API_KEY environment variable not set")
+            raise ValueError("GEMINI_API_KEY environment variable not set")
+        
+        # Initialize Gemini client
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = gemini_config.get("model", "gemini-2.5-flash-preview-05-20")
+        logger.info(f"Initialized Gemini API with model: {model}")
+    elif provider.lower() == "qwen":
+        qwen_config = LLM_CONFIG.get("qwen", {})
+        api_key = qwen_config.get("api_key") or os.getenv("DASHSCOPE_API_KEY")
+        if not api_key:
+            logger.error("DASHSCOPE_API_KEY environment variable not set")
+            raise ValueError("DASHSCOPE_API_KEY environment variable not set")
+        # Qwen uses OpenAI-compatible API, no specific initialization needed here
+        model = qwen_config.get("model", "qwen-plus")
+        logger.info(f"Initialized Qwen API with model: {model}")
+    else:
+        logger.error(f"Unsupported LLM provider: {provider}")
+        raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 
@@ -156,6 +176,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     logger.info(f"当前并发任务数: {running_tasks}")
 
                     from core.github_utils import normalize_github_url
+                    from core.maven_utils import analyze_maven_repository_url
                     url = row["github_url"]
                     url = normalize_github_url(url)
                     version = row.get("version")
@@ -189,12 +210,65 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                 name=name
                             )
                     else:
-                        result = await process_github_repository(
-                            api,
-                            url,
-                            version,
-                            name=name
-                        )
+                        # 新增：对于 Maven URL，先走默认的 GitHub 流程
+                        is_maven_url = isinstance(url, str) and "mvnrepository.com/artifact" in url
+                        if is_maven_url:
+                            logger.info(f"检测到 Maven URL: {url}，先尝试 GitHub 流程")
+                            result = await process_github_repository(
+                                api,
+                                url,
+                                version,
+                                name=name
+                            )
+                            
+                            # 如果 GitHub 流程不成功，再调用 Maven 处理函数
+                            if result.get("status") != "success":
+                                logger.info(f"GitHub 流程未成功，调用 Maven 处理函数")
+                                try:
+                                    from core.maven_utils import analyze_maven_repository_url
+                                    maven_result = analyze_maven_repository_url(url)
+                                    
+                                    # 转换 Maven 结果为标准格式
+                                    license_file_url = f"https://mvnrepository.com/artifact/{maven_result['group_id']}/{maven_result['artifact_id']}/{maven_result.get('version', '')}"
+                                    
+                                    # 修复：正确处理copyright信息
+                                    copyright_notice = maven_result.get('copyright')
+                                    if not copyright_notice:
+                                        # 如果没有从Maven结果中获取到copyright，构造一个默认的
+                                        orgname = maven_result['group_id'].split(".")[0] if '.' in maven_result['group_id'] else maven_result['group_id']
+                                        copyright_notice = f"Copyright (c) {orgname}"
+                                    
+                                    result = {
+                                        "input_url": url,
+                                        "repo_url": None,
+                                        "input_version": version,
+                                        "resolved_version": maven_result.get('version'),
+                                        "used_default_branch": False,
+                                        "component_name": name or maven_result['artifact_id'],
+                                        "license_files": license_file_url,
+                                        "license_analysis": {
+                                            "license_determination_reason": "Fetched from Maven Central POM",
+                                            "license_source": "maven_central"
+                                        },
+                                        "license_type": maven_result.get('license'),
+                                        "has_license_conflict": False,
+                                        "readme_license": None,
+                                        "license_file_license": maven_result.get('license'),
+                                        "copyright_notice": copyright_notice,  # 修复：正确使用从Maven结果中获取的copyright
+                                        "status": "success",
+                                        "input_name": name,
+                                    }
+                                except Exception as e:
+                                    logger.warning(f"Maven 处理失败: {e}")
+                                    # 保持原来的错误结果
+                        else:
+                            # 非 Maven URL，直接走原来的 GitHub 流程
+                            result = await process_github_repository(
+                                api,
+                                url,
+                                version,
+                                name=name
+                            )
                     # 新增：保留 input_name 字段
                     result["input_name"] = name
                     results[index] = result

@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional
-from .config import GEMINI_CONFIG, THIRD_PARTY_KEYWORDS
+from .config import LLM_CONFIG, THIRD_PARTY_KEYWORDS
 from .llm_provider import get_llm_provider
-import google.generativeai as genai
 from dotenv import load_dotenv
 import yaml
 import os
@@ -472,20 +471,6 @@ def extract_copyright_info(content: str) -> Optional[str]:
         return None
 
     try:
-        # prompt = """
-        # Analyze the following text and extract copyright information.
-        # Look for phrases like "Copyright (c)", "Copyright ©", or similar copyright notices.
-        # If found, return the exact copyright notice.
-        # If not found, return null.
-
-        # Text:
-        # {content}
-
-        # Return the result in JSON format:
-        # {{
-        #     "copyright_notice": "exact copyright notice if found, otherwise null"
-        # }}
-        # """
         prompt = PROMPTS["copyright_extract"].format(content=content)
         llm_logger = logging.getLogger('llm_interaction')
 
@@ -493,6 +478,7 @@ def extract_copyright_info(content: str) -> Optional[str]:
         llm_logger.info(f"Prompt: {prompt}")
 
         provider = get_llm_provider()
+        # Use synchronous generate when called from sync context
         response = provider.generate(prompt)
 
         llm_logger.info("Copyright Extraction Response:")
@@ -509,6 +495,43 @@ def extract_copyright_info(content: str) -> Optional[str]:
                 llm_logger.warning("No JSON found in copyright extraction response")
     except Exception as e:
         llm_logger.error(f"Failed to extract copyright info: {str(e)}", exc_info=True)
+    return None
+
+
+async def extract_copyright_info_async(content: str) -> Optional[str]:
+    """
+    Async version of extract_copyright_info that uses the provider's async API.
+
+    This should be used when called from within an already-running event loop.
+    """
+    if not USE_LLM:
+        return None
+
+    try:
+        prompt = PROMPTS["copyright_extract"].format(content=content)
+        llm_logger = logging.getLogger('llm_interaction')
+
+        llm_logger.info("Copyright Extraction Request (async):")
+        llm_logger.info(f"Prompt: {prompt}")
+
+        provider = get_llm_provider()
+        # call async generation
+        response = await provider.generate_async(prompt)
+
+        llm_logger.info("Copyright Extraction Response (async):")
+        llm_logger.info(f"Response: {response}")
+
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                copyright_notice = result.get("copyright_notice")
+                llm_logger.info(f"Extracted copyright notice: {copyright_notice}")
+                return copyright_notice
+            else:
+                llm_logger.warning("No JSON found in copyright extraction response (async)")
+    except Exception as e:
+        llm_logger.error(f"Failed to extract copyright info (async): {str(e)}", exc_info=True)
     return None
 
 

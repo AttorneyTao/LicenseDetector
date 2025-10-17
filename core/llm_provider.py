@@ -109,6 +109,7 @@ class GeminiProvider(LLMProvider):
         self._ensure_initialized()
         
         try:
+            logger.info(f"Calling LLM: {self.provider_name} ({self.model_name})")
             model = self._client.GenerativeModel(self.model)
             response = model.generate_content(prompt)
             return response.text
@@ -121,6 +122,7 @@ class GeminiProvider(LLMProvider):
         self._ensure_initialized()
         
         try:
+            logger.info(f"Calling LLM: {self.provider_name} ({self.model_name})")
             model = self._client.GenerativeModel(self.model)
             response = await model.generate_content_async(prompt)
             return response.text
@@ -140,7 +142,7 @@ class GeminiProvider(LLMProvider):
 class QwenProvider(LLMProvider):
     """Qwen (OpenAI-compatible) LLM provider implementation."""
     
-    def __init__(self, api_key: str, base_url: str, model: str = "qwen-plus"):
+    def __init__(self, api_key: str, base_url: str, model: str = "qwen3-max"):
         """
         Initialize Qwen provider.
         
@@ -172,6 +174,7 @@ class QwenProvider(LLMProvider):
     
     def generate(self, prompt: str, **kwargs) -> str:
         """Generate text using Qwen synchronously (runs async in sync context)."""
+        logger.info(f"Calling LLM: {self.provider_name} ({self.model_name})")
         # Since OpenAI client is async-only, we need to run it in an event loop
         try:
             loop = asyncio.get_event_loop()
@@ -191,6 +194,7 @@ class QwenProvider(LLMProvider):
     
     async def generate_async(self, prompt: str, **kwargs) -> str:
         """Generate text using Qwen asynchronously."""
+        logger.info(f"Calling LLM: {self.provider_name} ({self.model_name})")
         client = self._get_client()
         
         try:
@@ -247,7 +251,7 @@ class LLMProviderFactory:
         if provider_type.lower() == "gemini":
             gemini_config = LLM_CONFIG.get("gemini", {})
             api_key = gemini_config.get("api_key") or os.getenv("GEMINI_API_KEY")
-            model = gemini_config.get("model", "gemini-2.5-flash-preview-05-20")
+            model = gemini_config.get("model", "gemini-2.5-flash")
             
             if not api_key:
                 raise ValueError("Gemini API key not found in config or environment")
@@ -258,7 +262,7 @@ class LLMProviderFactory:
             qwen_config = LLM_CONFIG.get("qwen", {})
             api_key = qwen_config.get("api_key") or os.getenv("DASHSCOPE_API_KEY")
             base_url = qwen_config.get("base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-            model = qwen_config.get("model", "qwen-plus")
+            model = qwen_config.get("model", "qwen3-max")
             
             if not api_key:
                 raise ValueError("Qwen API key not found in config or environment")

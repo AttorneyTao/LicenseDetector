@@ -32,7 +32,7 @@ class Kind(Enum):
 
 
 #==============================================================================
-from .config import GEMINI_CONFIG, QWEN_CONFIG
+from .config import LLM_CONFIG
 
 load_dotenv()
 USE_LLM = os.getenv("USE_LLM", "true").lower() == "true"
@@ -1138,12 +1138,16 @@ async def process_github_repository(
                 license_content = license_info.get("content", "")
                 if license_content:
                     substep_logger.info("Analyzing license content")
-                    # 解码Base64编码的license内容
-                    import base64
+                    # 解码Base64编码的内容
                     try:
-                        license_content = base64.b64decode(license_content).decode('utf-8')
+                        import base64
+                        # 检查content是否是Base64编码的
+                        if license_info.get("encoding") == "base64":
+                            license_content = base64.b64decode(license_content).decode('utf-8')
+                            substep_logger.info("Successfully decoded Base64 license content")
                     except Exception as e:
-                        substep_logger.warning(f"Failed to decode base64 license content: {str(e)}")
+                        substep_logger.warning(f"Failed to decode license content: {str(e)}")
+                        # 如果解码失败，继续使用原始内容
                     license_url = license_info.get("_links", {}).get("html") or license_info.get("download_url", "")
                     license_file_analysis = await analyze_license_content_async(license_content, license_url)
                     # 如果LLM分析成功，直接返回结果
@@ -1164,7 +1168,7 @@ async def process_github_repository(
                             "license_files": license_url,
                             "license_analysis": license_file_analysis,
                             "has_license_conflict": False,
-                            "readme_license": None,
+                            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
                             "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "copyright_notice": copyright_notice,
                             "status": "success",
@@ -1193,6 +1197,40 @@ async def process_github_repository(
         #substep_logger.info("Step 7/15: Saving tree structure")
         #await save_github_tree_to_file(repo_url, resolved_version, tree)
 
+        # Find and analyze README（在所有情况下都处理README）
+        readme_path = find_readme(tree, sub_path)
+        if not readme_path:
+            substep_logger.info("No README found in subpath, checking repository root")
+            readme_path = find_readme(tree)
+
+        readme_content = None
+        readme_license_analysis = None
+        if readme_path:
+            substep_logger.info(f"Found README at: {readme_path}")
+            readme_content = await api.get_file_content(owner, repo, readme_path, resolved_version)
+            if readme_content:
+                substep_logger.info("Analyzing README content for license information")
+                # 解码Base64编码的内容（如果需要的话）
+                try:
+                    # 检查是否是Base64编码的内容
+                    if isinstance(readme_content, str) and len(readme_content) > 0:
+                        # 尝试解码Base64，如果失败则使用原始内容
+                        import base64
+                        # 检查是否可能是Base64编码的内容
+                        if len(readme_content) % 4 == 0 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in readme_content):
+                            try:
+                                readme_content = base64.b64decode(readme_content).decode('utf-8')
+                            except Exception:
+                                pass  # 如果解码失败，继续使用原始内容
+                except Exception as e:
+                    substep_logger.warning(f"Failed to decode README content: {str(e)}")
+                    # 如果解码失败，继续使用原始内容
+                # 构建README文件的GitHub URL
+                readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
+                readme_license_analysis = await analyze_license_content_async(readme_content, readme_url)
+                if readme_license_analysis is not None and "thirdparty_dirs" not in readme_license_analysis:
+                    readme_license_analysis["thirdparty_dirs"] = thirdparty_dirs
+
         # Step 9: Search for license files
         substep_logger.info("Step 9/15: Searching for license files")
         path_map = {
@@ -1218,7 +1256,7 @@ async def process_github_repository(
                 if license_content:
                     # 使用完整的GitHub URL
                     license_file_analysis_result = await analyze_license_content_async(license_content, selected_license_file['url'])
-                    
+                        
             if license_file_analysis_result is not None and "thirdparty_dirs" not in license_file_analysis_result:
                 license_file_analysis_result["thirdparty_dirs"] = thirdparty_dirs
             # 只要分析有结果，直接返回
@@ -1239,7 +1277,7 @@ async def process_github_repository(
                     "license_analysis": license_file_analysis_result,
                     "license_type": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "has_license_conflict": False,
-                    "readme_license": None,
+                    "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
                     "license_file_license": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "copyright_notice": copyright_notice,
                     "status": "success",
@@ -1266,7 +1304,7 @@ async def process_github_repository(
                 "license_files": license_url,
                 "license_analysis": license_file_analysis,
                 "has_license_conflict": False,
-                "readme_license": None,
+                "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
                 "license_file_license": license_type,  # 添加这行以确保license_file_license被设置
                 "copyright_notice": copyright_notice,
                 "status": "success",
@@ -1289,6 +1327,21 @@ async def process_github_repository(
                     license_file_analysis = None
                     license_content = await api.get_file_content(owner, repo, selected_license_file['path'], resolved_version)
                     if license_content:
+                        # 解码Base64编码的内容（如果需要的话）
+                        try:
+                            # 检查是否是Base64编码的内容
+                            if isinstance(license_content, str) and len(license_content) > 0:
+                                # 尝试解码Base64，如果失败则使用原始内容
+                                import base64
+                                # 检查是否可能是Base64编码的内容
+                                if len(license_content) % 4 == 0 and all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in license_content):
+                                    try:
+                                        license_content = base64.b64decode(license_content).decode('utf-8')
+                                    except Exception:
+                                        pass  # 如果解码失败，继续使用原始内容
+                        except Exception as e:
+                            substep_logger.warning(f"Failed to decode license content: {str(e)}")
+                            # 如果解码失败，继续使用原始内容
                         license_file_analysis = await analyze_license_content_async(license_content, selected_license_file['url'])
                         
                     if license_file_analysis is not None and "thirdparty_dirs" not in license_file_analysis:
@@ -1310,67 +1363,48 @@ async def process_github_repository(
                             "license_analysis": license_file_analysis,
                             "license_type": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "has_license_conflict": False,
-                            "readme_license": None,
+                            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
                             "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "copyright_notice": copyright_notice,
                             "status": "success",
                             "license_determination_reason": determination_reason
                         }
 
-        # Step 8: Find and analyze README（兜底，只有前面都没找到license时才执行）
-        substep_logger.info("Step 8/15: Looking for README file")
-        readme_path = find_readme(tree, sub_path)
-        if not readme_path:
-            substep_logger.info("No README found in subpath, checking repository root")
-            readme_path = find_readme(tree)
+        # 如果在README中找到了许可证信息，并且之前没有通过其他方式找到主要许可证，则使用README中的信息
+        if readme_license_analysis and readme_license_analysis.get("licenses") and not license_file_analysis:
+            determination_reason = f"Found license info in README: {readme_license_analysis['licenses']}"
+            readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
+            copyright_notice = await construct_copyright_notice_async(
+                await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
+                readme_content, None
+            )
+            return {
+                "input_url": input_url,
+                "repo_url": repo_url,
+                "input_version": version,
+                "resolved_version": resolved_version,
+                "used_default_branch": used_default_branch,
+                "component_name": component_name,
+                "license_files": readme_url,
+                "license_analysis": readme_license_analysis,
+                "license_type": readme_license_analysis.get("spdx_expression") or (readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None),
+                "has_license_conflict": False,
+                "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
+                "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis.get("licenses") else None,  # 从README中获取的许可证
+                "copyright_notice": copyright_notice,
+                "status": "success",
+                "license_determination_reason": determination_reason
+            }
 
-        readme_content = None
-        readme_license_analysis = None
-        if readme_path:
-            substep_logger.info(f"Found README at: {readme_path}")
-            readme_content = await api.get_file_content(owner, repo, readme_path, resolved_version)
-            if readme_content:
-                substep_logger.info("Analyzing README content for license information")
-                # 构建README文件的GitHub URL
-                readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
-                readme_license_analysis = await analyze_license_content_async(readme_content, readme_url)
-                if readme_license_analysis is not None and "thirdparty_dirs" not in readme_license_analysis:
-                    readme_license_analysis["thirdparty_dirs"] = thirdparty_dirs
-                if readme_license_analysis and readme_license_analysis.get("licenses"):
-                    determination_reason = f"Found license info in README: {readme_license_analysis['licenses']}"
-                    readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
-                    copyright_notice = await construct_copyright_notice_async(
-                        await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
-                        readme_content, None
-                    )
-                    return {
-                        "input_url": input_url,
-                        "repo_url": repo_url,
-                        "input_version": version,
-                        "resolved_version": resolved_version,
-                        "used_default_branch": used_default_branch,
-                        "component_name": component_name,
-                        "license_files": readme_url,
-                        "license_analysis": readme_license_analysis,
-                        "license_type": readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None,
-                        "has_license_conflict": False,
-                        "readme_license": readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None,
-                        "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None,  # 从README中获取的许可证
-                        "copyright_notice": copyright_notice,
-                        "status": "success",
-                        "license_determination_reason": determination_reason
-                    }
-
-        # Step 15: No licenses found
-        substep_logger.info("Step 15/15: No licenses found in repository")
+        # 如果所有方法都没有找到许可证信息，则返回README分析结果（如果有的话）
         determination_reason = "No license files found in repository"
-        substep_logger.warning(determination_reason)
         readme_url = ""
         if readme_path:
             readme_url = f"https://github.com/{owner}/{repo}/blob/{resolved_version}/{readme_path}"
         license_files_value = ""
         if readme_license_analysis and readme_license_analysis.get("licenses"):
             license_files_value = readme_url
+            determination_reason = f"Found license info in README: {readme_license_analysis['licenses']}"
         if readme_license_analysis is not None and "thirdparty_dirs" not in readme_license_analysis:
             readme_license_analysis["thirdparty_dirs"] = thirdparty_dirs
         copyright_notice = await construct_copyright_notice_async(
@@ -1386,9 +1420,9 @@ async def process_github_repository(
             "component_name": component_name,
             "license_files": license_files_value,
             "license_analysis": readme_license_analysis,
-            "license_type": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,
+            "license_type": readme_license_analysis.get("spdx_expression") or (readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None),
             "has_license_conflict": False,
-            "readme_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,
+            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
             "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,  # 从README中获取的许可证
             "copyright_notice": copyright_notice,
             "status": "success",
