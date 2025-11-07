@@ -177,8 +177,8 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
 
                     from core.github_utils import normalize_github_url
                     from core.maven_utils import analyze_maven_repository_url
-                    url = row["github_url"]
-                    url = normalize_github_url(url)
+                    original_url = row["github_url"]  # 保存原始URL
+                    url = normalize_github_url(original_url)
                     version = row.get("version")
                     name = row.get("name", None)
 
@@ -239,7 +239,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                         copyright_notice = f"Copyright (c) {orgname}"
                                     
                                     result = {
-                                        "input_url": url,
+                                        "input_url": original_url,  # 使用原始URL
                                         "repo_url": None,
                                         "input_version": version,
                                         "resolved_version": maven_result.get('version'),
@@ -271,6 +271,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                             )
                     # 新增：保留 input_name 字段
                     result["input_name"] = name
+                    result["input_url"] = original_url  # 确保始终使用原始URL
                     results[index] = result
                 except Exception as e:
                     logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
