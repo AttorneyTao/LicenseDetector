@@ -208,8 +208,11 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                 name=name
                             )
                     else:
-                        # 新增：对于 Maven URL，先走默认的 GitHub 流程
-                        is_maven_url = isinstance(url, str) and "mvnrepository.com/artifact" in url
+                        # 修改：对于 Maven URL（包括 mvnrepository.com 和 repo1.maven.org），先走默认的 GitHub 流程
+                        is_maven_url = isinstance(url, str) and (
+                            "mvnrepository.com/artifact" in url or 
+                            "repo1.maven.org/maven2" in url
+                        )
                         if is_maven_url:
                             logger.info(f"检测到 Maven URL: {url}，先尝试 GitHub 流程")
                             result = await process_github_repository(
@@ -233,8 +236,9 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                     copyright_notice = maven_result.get('copyright')
                                     if not copyright_notice:
                                         # 如果没有从Maven结果中获取到copyright，构造一个默认的
-                                        orgname = maven_result['group_id'].split(".")[0] if '.' in maven_result['group_id'] else maven_result['group_id']
-                                        copyright_notice = f"Copyright (c) {orgname}"
+                                        org_parts = maven_result['group_id'].split(".")
+                                        orgname = org_parts[1] if len(org_parts) > 1 else org_parts[0]
+                                        copyright_notice = f"Copyright (c) {datetime.now().year} {orgname.capitalize()}"
                                     
                                     result = {
                                         "input_url": original_url,  # 使用原始URL
@@ -246,7 +250,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                         "license_files": license_file_url,
                                         "license_analysis": {
                                             "license_determination_reason": "Fetched from Maven Central POM",
-                                            "license_source": "maven_central"
+                                            "license_source": maven_result.get('license_source', 'maven_central')
                                         },
                                         "license_type": maven_result.get('license'),
                                         "has_license_conflict": False,

@@ -45,19 +45,23 @@ from typing import Optional, Dict, Tuple, List, Any
 from urllib.parse import urlparse, unquote
 import logging
 
+# requests is a commonly available third party HTTP client.  It
+# provides better ergonomics than urllib.request and is used
+# throughout this module for simplicity.  If requests is not
+# available the code will fall back to urllib as a last resort.
 try:
-    # requests is a commonly available third party HTTP client.  It
-    # provides better ergonomics than urllib.request and is used
-    # throughout this module for simplicity.  If requests is not
-    # available the code will fall back to urllib as a last resort.
     import requests  # type: ignore
-
     _HAS_REQUESTS = True
-except Exception:
+except ImportError:
+    requests = None  # type: ignore
+    _HAS_REQUESTS = False
+
+# Import urllib for fallback
+try:
     import urllib.request
     import urllib.error
-
-    _HAS_REQUESTS = False
+except ImportError:
+    urllib = None  # type: ignore
 
 
 class MavenURLParseError(ValueError):
@@ -85,6 +89,75 @@ class GAV:
         return f"{self.group_id.replace('.', '/')}/{self.artifact_id}"
 
 
+def _convert_maven_central_url_to_mvnrepository_format(url: str) -> Optional[str]:
+    """将Maven Central URL转换为mvnrepository.com URL格式。
+    
+    支持的输入格式:
+    - https://repo1.maven.org/maven2/group/path/artifact/version/artifact-version.jar
+    - repo1.maven.org/maven2/group/path/artifact/version/artifact-version.jar
+    
+    转换为:
+    - https://mvnrepository.com/artifact/group.path/artifact/version
+    
+    Parameters
+    ----------
+    url: str
+        Maven Central URL
+        
+    Returns
+    -------
+    str or None
+        转换后的mvnrepository.com URL，如果无法转换则返回None
+    """
+    logger = logging.getLogger("maven_utils.convert_url")
+    logger.debug(f"Converting Maven Central URL: {url}")
+    
+    # 确保URL以https://开头，如果不是则添加
+    if not url.startswith("http"):
+        url = "https://" + url
+    
+    # 解析URL
+    parsed = urlparse(url)
+    
+    # 检查是否是Maven Central URL
+    if not parsed.netloc or "repo1.maven.org" not in parsed.netloc:
+        logger.debug(f"URL is not a Maven Central URL: {url}")
+        return None
+    
+    # 解析路径
+    path = parsed.path.strip("/")
+    if not path.startswith("maven2/"):
+        logger.debug(f"URL path does not start with maven2/: {url}")
+        return None
+    
+    # 移除maven2/前缀
+    path = path[len("maven2/"):]
+    parts = path.split("/")
+    
+    # 至少需要group路径、artifact、version
+    if len(parts) < 3:
+        logger.debug(f"URL path does not have enough components: {url}")
+        return None
+    
+    # 提取version（最后一个部分）
+    version = parts[-2]  # 倒数第二个是版本号
+    artifact = parts[-3]  # 倒数第三个是artifactId
+    
+    # 提取groupId（前面的所有部分用点连接）
+    group_parts = parts[:-3]  # 除了最后三个部分（artifact, version, filename）
+    if not group_parts:
+        logger.debug(f"Could not extract group from URL: {url}")
+        return None
+    
+    group_id = ".".join(group_parts)
+    
+    # 构造mvnrepository.com URL
+    mvn_url = f"https://mvnrepository.com/artifact/{group_id}/{artifact}/{version}"
+    logger.debug(f"Converted to mvnrepository URL: {mvn_url}")
+    
+    return mvn_url
+
+
 def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
     """Best effort helper to perform a GET request and return the text body and status.
 
@@ -106,7 +179,7 @@ def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
     for attempt in range(1, attempts + 1):
         try:
             logger.debug(f"HTTP GET (attempt {attempt}): {url}")
-            if _HAS_REQUESTS:
+            if _HAS_REQUESTS and requests is not None:
                 resp = requests.get(url, timeout=10, headers=headers, allow_redirects=True)
                 logger.debug(f"HTTP GET status: {resp.status_code} for {url}")
                 logger.debug(f"Response headers: {dict(resp.headers)}")
@@ -122,7 +195,7 @@ def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
                     return resp.text, resp.status_code
                 
                 return resp.text, resp.status_code
-            else:
+            elif urllib is not None:
                 req = urllib.request.Request(url, headers=headers)
                 with urllib.request.urlopen(req, timeout=10) as fh:
                     charset = fh.headers.get_content_charset() or "utf-8"
@@ -131,6 +204,10 @@ def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
                     logger.debug(f"HTTP GET status: {status} for {url}")
                     logger.debug(f"Response content length: {len(body)}")
                     return body, status
+            else:
+                # Neither requests nor urllib is available
+                logger.error(f"No HTTP client available for request to {url}")
+                return None, None
         except Exception as exc:
             logger.warning(f"HTTP GET attempt {attempt} failed for {url}: {exc}")
             if attempt == attempts:
@@ -143,6 +220,9 @@ def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
                 time.sleep(0.5 * attempt)
             except Exception:
                 pass
+    
+    # 如果循环完成但没有返回，确保返回默认值
+    return None, None
 
 
 def parse_mvnrepository_url(url: str) -> GAV:
@@ -271,10 +351,10 @@ def resolve_latest_version(gav: GAV) -> Optional[str]:
     return None
 
 
-def _extract_license_from_pom(pom_xml: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _extract_license_from_pom(pom_xml: str) -> Tuple[List[Dict], Optional[str], Optional[str]]:
     """Parse a POM file and extract licence information.
 
-    Returns a tuple ``(license_name, license_url, copyright)``.  Each
+    Returns a tuple ``(licenses_list, license_url, copyright)``.  Each
     element may be ``None`` if it is not present in the POM.  When
     multiple licences are declared only the first one is returned to
     simplify downstream processing.  Copyright strings are extracted
@@ -286,7 +366,7 @@ def _extract_license_from_pom(pom_xml: str) -> Tuple[Optional[str], Optional[str
         root = ET.fromstring(pom_xml)
     except ET.ParseError as exc:
         logger.warning(f"Failed to parse POM XML: {exc}")
-        return None, None, None
+        return [], None, None
 
     # licence extraction - 提取所有license
     licenses_list = []
@@ -646,7 +726,17 @@ def analyze_maven_repository_url(url: str) -> Dict[str, Any]:
         If the URL cannot be parsed into a GAV.
     """
     logger = logging.getLogger("maven_utils.analyze")
-    logger.info(f"Analyze mvnrepository URL: {url}")
+    logger.info(f"Analyze Maven URL: {url}")
+    
+    # 检查是否是Maven Central URL，如果是则转换为mvnrepository.com格式
+    if "repo1.maven.org" in url:
+        converted_url = _convert_maven_central_url_to_mvnrepository_format(url)
+        if converted_url:
+            logger.info(f"Converted Maven Central URL to: {converted_url}")
+            url = converted_url
+        else:
+            logger.warning(f"Failed to convert Maven Central URL: {url}")
+    
     gav = parse_mvnrepository_url(url)
     result: Dict[str, Any] = {
         "group_id": gav.group_id,
