@@ -619,6 +619,17 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
         version_resolve_logger.info(f"Version {version} detected as SHA, using directly.")
         return version, False
 
+    # 新增：处理 v0.0.0-20200907205600-7a23bdc65eef 或 0.0.0-20200907205600-7a23bdc65eef 格式
+    if version:
+        version_str = str(version).strip()
+        # 检查是否匹配模式：可选的'v'前缀 + 0.0.0-时间戳-SHA格式
+        import re
+        match = re.match(r'^v?0\.0\.0-\d{14}-([a-f0-9]+)$', version_str, re.IGNORECASE)
+        if match:
+            sha = match.group(1)[:7]  # 取第三节的前7位作为SHA
+            version_resolve_logger.info(f"Version {version} detected as Go pseudo-version, extracted SHA: {sha}")
+            return sha, False
+
     # Get default branch
     repo_info = await api.get_repo_info(owner, repo)  # 添加 await
     # 安全获取 default_branch，没有则 fallback
