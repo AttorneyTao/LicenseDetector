@@ -1,3 +1,4 @@
+from typing import Optional
 import aiohttp
 import os
 import logging
@@ -38,7 +39,7 @@ def pkggo_to_proxy_url(pkggo_url: str) -> str:
     return result
 
 
-async def get_github_url_from_pkggo(pkggo_url: str, version: str = None, name: str = None) -> dict:
+async def get_github_url_from_pkggo(pkggo_url: str, version: Optional[str] = None, name: Optional[str] = None) -> dict:
     """
     根据 pkg.go.dev/go module 地址，获取 proxy.golang.org 的元数据，并尝试提取 GitHub 仓库地址
     返回 dict: {"github_url": ..., "module_path": ..., "raw_info": ...}
@@ -67,6 +68,3 @@ async def get_github_url_from_pkggo(pkggo_url: str, version: str = None, name: s
                 "module_path": module_path,
                 "raw_info": info
             }
-
-async def process_go_package(pkggo_url: str, version: str, name: str) -> dict:
-    pass
