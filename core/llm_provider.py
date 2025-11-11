@@ -95,7 +95,9 @@ class GeminiProvider(LLMProvider):
         if not self._initialized:
             try:
                 import google.generativeai as genai
-                genai.configure(api_key=self.api_key)
+                # Import configure from the correct module to satisfy type checkers
+                from google.generativeai.client import configure
+                configure(api_key=self.api_key)
                 self._client = genai
                 self._initialized = True
                 logger.info(f"Initialized Gemini provider with model: {self.model}")
@@ -108,9 +110,15 @@ class GeminiProvider(LLMProvider):
         """Generate text using Gemini synchronously."""
         self._ensure_initialized()
         
+        # Type checking to satisfy static analysis tools
+        if self._client is None:
+            raise RuntimeError("Gemini client not initialized")
+        
         try:
             logger.info(f"Calling LLM: {self.provider_name} ({self.model_name})")
-            model = self._client.GenerativeModel(self.model)
+            # Import GenerativeModel from the correct module to satisfy type checkers
+            from google.generativeai.generative_models import GenerativeModel
+            model = GenerativeModel(self.model)
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
@@ -121,9 +129,15 @@ class GeminiProvider(LLMProvider):
         """Generate text using Gemini asynchronously."""
         self._ensure_initialized()
         
+        # Type checking to satisfy static analysis tools
+        if self._client is None:
+            raise RuntimeError("Gemini client not initialized")
+        
         try:
             logger.info(f"Calling LLM: {self.provider_name} ({self.model_name})")
-            model = self._client.GenerativeModel(self.model)
+            # Import GenerativeModel from the correct module to satisfy type checkers
+            from google.generativeai.generative_models import GenerativeModel
+            model = GenerativeModel(self.model)
             response = await model.generate_content_async(prompt)
             return response.text
         except Exception as e:

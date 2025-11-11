@@ -31,7 +31,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
 from tqdm import tqdm
-import google.generativeai as genai
 
 #=============================================================================
 # Import internal packages
@@ -40,7 +39,7 @@ from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column
-from core.go_utils import process_go_package, get_github_url_from_pkggo
+from core.go_utils import  get_github_url_from_pkggo
 
 # ============================================================================
 # Load Prompts Section
@@ -88,10 +87,9 @@ if USE_LLM:
             logger.error("GEMINI_API_KEY environment variable not set")
             raise ValueError("GEMINI_API_KEY environment variable not set")
         
-        # Initialize Gemini client
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = gemini_config.get("model", "gemini-2.5-flash-preview-05-20")
+        # Initialize Gemini client using the proper way according to the llm_provider abstraction
+        # Remove direct genai.configure call since it's handled in llm_provider.py
+        model = gemini_config.get("model", "gemini-2.5-flash")
         logger.info(f"Initialized Gemini API with model: {model}")
     elif provider.lower() == "qwen":
         qwen_config = LLM_CONFIG.get("qwen", {})

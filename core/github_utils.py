@@ -11,7 +11,6 @@ import yaml
 from dotenv import load_dotenv
 import re
 import json
-import google.generativeai as genai
 import httpx  # 新增：导入 httpx
 import asyncio  # 新增：导入 asyncio
 from httpx import AsyncClient
@@ -41,6 +40,7 @@ with open("prompts.yaml", "r", encoding="utf-8") as f:
 
 logger = logging.getLogger('main')
 llm_logger = logging.getLogger('llm_interaction')
+
 def normalize_github_url(url: str) -> str:
     """如果是 github.com/xxx/yyy 但没有协议头，自动补全为 https://github.com/xxx/yyy"""
     if not isinstance(url, str):
@@ -75,10 +75,14 @@ class GitHubAPI:
     
     def __init__(self):  # 改回同步初始化
         """同步初始化基本属性"""
+        import requests
         self.headers = {
             "Accept": "application/vnd.github.v3+json",
             "Authorization": f"token {os.getenv('GITHUB_TOKEN')}"
         }
+        # 初始化 session
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
     
     async def initialize(self):  # 新增异步初始化方法
         """异步初始化和测试连接"""
@@ -90,7 +94,7 @@ class GitHubAPI:
             logger.error(f"Failed to connect to GitHub API: {str(e)}")
             raise
 
-    def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
+    def _make_request_sync(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
         Makes an authenticated request to the GitHub API with rate limit handling.
         
@@ -135,7 +139,7 @@ class GitHubAPI:
             return response.json()
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
+    async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict[str, Any]:
         """
         异步请求处理，包含速率限制处理和自动重定向
         """
@@ -206,7 +210,7 @@ class GitHubAPI:
 
         return None
 
-    def get_repo_info(self, owner: str, repo: str) -> Dict:
+    def get_repo_info_sync(self, owner: str, repo: str) -> Dict:
         """
         Retrieves detailed information about a GitHub repository.
         
@@ -233,7 +237,8 @@ class GitHubAPI:
                 - forks_count: Number of forks
         """
         logger.info(f"Fetching repository info for {owner}/{repo}")
-        return self._make_request(f"/repos/{owner}/{repo}")
+        result = self._make_request(f"/repos/{owner}/{repo}")
+        return result if isinstance(result, dict) else {}
 
     async def get_repo_info(self, owner: str, repo: str) -> Dict:
         """
@@ -246,7 +251,7 @@ class GitHubAPI:
             logger.error(f"Error fetching repo info for {owner}/{repo}: {str(e)}")
             raise
 
-    def get_branches(self, owner: str, repo: str) -> List[Dict]:
+    def get_branches_sync(self, owner: str, repo: str) -> List[Dict[str, Any]]:
         """
         Retrieves all branches for a repository.
         
@@ -268,13 +273,15 @@ class GitHubAPI:
                 - protection_url: URL to protection rules
         """
         logger.info(f"Fetching branches for {owner}/{repo}")
-        return self._make_request(f"/repos/{owner}/{repo}/branches")
+        result = self._make_request(f"/repos/{owner}/{repo}/branches")
+        return result if isinstance(result, list) else []
 
-    async def get_branches(self, owner: str, repo: str) -> List[Dict]:
+    async def get_branches(self, owner: str, repo: str) -> List[Dict[str, Any]]:
         logger.info(f"Fetching branches for {owner}/{repo}")
-        return await self._make_request(f"/repos/{owner}/{repo}/branches")
+        result = await self._make_request(f"/repos/{owner}/{repo}/branches")
+        return result if isinstance(result, list) else []
 
-    def get_tags(self, owner: str, repo: str) -> List[Dict]:
+    def get_tags_sync(self, owner: str, repo: str) -> List[Dict[str, Any]]:
         """
         Retrieves all tags for a repository, handling pagination.
 
@@ -296,7 +303,7 @@ class GitHubAPI:
                 - tarball_url: URL to download tar archive
         """
         logger.info(f"Fetching tags for {owner}/{repo} (with pagination)")
-        tags = []
+        tags: List[Dict] = []
         page = 1
         per_page = 100
         
@@ -311,13 +318,14 @@ class GitHubAPI:
                 # Defensive: sometimes API returns dict with 'message' on error
                 logger.warning(f"Unexpected response format when fetching tags: {response}")
                 break
-            tags.extend(response)
-            if len(response) < per_page:
+            if isinstance(response, list):
+                tags.extend(response)
+            if isinstance(response, list) and len(response) < per_page:
                 break
             page += 1
         return tags
 
-    async def get_tags(self, owner: str, repo: str) -> List[Dict]:
+    async def get_tags(self, owner: str, repo: str) -> List[Dict[str, Any]]:
         """
         异步获取所有 tags
         """
@@ -336,13 +344,14 @@ class GitHubAPI:
             if isinstance(response, dict):
                 logger.warning(f"Unexpected response format when fetching tags: {response}")
                 break
-            tags.extend(response)
-            if len(response) < per_page:
+            if isinstance(response, list):
+                tags.extend(response)
+            if isinstance(response, list) and len(response) < per_page:
                 break
             page += 1
         return tags
 
-    def get_tree(self, owner: str, repo: str, sha: str) -> Dict:
+    def get_tree_sync(self, owner: str, repo: str, sha: str) -> Dict:
         """
         Retrieves the complete repository tree structure.
         
@@ -371,13 +380,14 @@ class GitHubAPI:
                     - url: API URL for the item
         """
         logger.info(f"Fetching tree for {owner}/{repo} at {sha}")
-        return self._make_request(f"/repos/{owner}/{repo}/git/trees/{sha}", {"recursive": "1"})
+        result = self._make_request(f"/repos/{owner}/{repo}/git/trees/{sha}", {"recursive": "1"})
+        return result if isinstance(result, dict) else {}
 
     async def get_tree(self, owner: str, repo: str, sha: str) -> Dict:
         logger.info(f"Fetching tree for {owner}/{repo} at {sha}")
         return await self._make_request(f"/repos/{owner}/{repo}/git/trees/{sha}", {"recursive": "1"})
 
-    def get_license(self, owner: str, repo: str, ref: Optional[str] = None) -> Optional[Dict]:
+    def get_license_sync(self, owner: str, repo: str, ref: Optional[str] = None) -> Optional[Dict]:
         """
         Retrieves license information for a repository.
         
@@ -418,10 +428,11 @@ class GitHubAPI:
         try:
             # Add ref parameter if specified
             params = {"ref": ref} if ref else None
-            return self._make_request(f"/repos/{owner}/{repo}/license", params=params)
-        except requests.exceptions.HTTPError as e:
+            result = self._make_request(f"/repos/{owner}/{repo}/license", params=params)
+            return result if isinstance(result, dict) else None
+        except Exception as e:
             # Handle 404 (no license found) gracefully
-            if e.response.status_code == 404:
+            if "404" in str(e):
                 logger.warning(f"No license found for {owner}/{repo}")
                 return None
             logger.error(f"Error fetching license: {str(e)}")
@@ -432,13 +443,14 @@ class GitHubAPI:
             params = {"ref": ref} if ref else None
             return await self._make_request(f"/repos/{owner}/{repo}/license", params=params)
         except Exception as e:
-            if getattr(e, 'response', None) and e.response.status_code == 404:
+            # 检查是否是HTTP 404错误
+            if "404" in str(e):
                 logger.warning(f"No license found for {owner}/{repo}")
                 return None
             logger.error(f"Error fetching license: {str(e)}")
             raise
 
-def find_github_url_from_package_url(package_url: str) -> Optional[str]:
+def find_github_url_from_package_url_sync(package_url: str) -> Optional[str]:
     """
     Attempts to find a GitHub URL from a package URL.
     
@@ -619,10 +631,20 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
         version_resolve_logger.info(f"Version {version} detected as SHA, using directly.")
         return version, False
 
+    # 新增：处理 v0.0.0-20200907205600-7a23bdc65eef 或 0.0.0-20200907205600-7a23bdc65eef 格式
+    if version:
+        version_str = str(version).strip()
+        # 检查是否匹配模式：可选的'v'前缀 + 0.0.0-时间戳-SHA格式
+        match = re.match(r'^v?0\.0\.0-\d{14}-([a-f0-9]+)$', version_str, re.IGNORECASE)
+        if match:
+            sha = match.group(1)[:7]  # 取第三节的前7位作为SHA
+            version_resolve_logger.info(f"Version {version} detected as Go pseudo-version, extracted SHA: {sha}")
+            return sha, False
+
     # Get default branch
     repo_info = await api.get_repo_info(owner, repo)  # 添加 await
     # 安全获取 default_branch，没有则 fallback
-    default_branch = repo_info.get("default_branch")
+    default_branch: str = repo_info.get("default_branch", "main")
     if not default_branch:
         # fallback 顺序：main > master > 第一个 branch > 'main'
         branches = await api.get_branches(owner, repo)
@@ -632,7 +654,7 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
         elif "master" in branch_names:
             default_branch = "master"
         elif branch_names:
-            default_branch = branch_names[0]
+            default_branch = branch_names[0] if branch_names[0] else "main"
         else:
             default_branch = "main"
         logging.getLogger('version_resolve').warning(
@@ -967,10 +989,17 @@ async def get_github_last_update_time(api: GitHubAPI, owner: str, repo: str, ref
             Example: "2024"
     """
     try:
-        commits = await api._make_request(f"/repos/{owner}/{repo}/commits", {"sha": ref, "per_page": 1})
-        if commits and len(commits) > 0:
-            commit_date = commits[0]["commit"]["author"]["date"]
-            return commit_date.split("-")[0]
+        commits_result = await api._make_request(f"/repos/{owner}/{repo}/commits", {"sha": ref, "per_page": 1})
+        if isinstance(commits_result, list) and len(commits_result) > 0:
+            first_commit = commits_result[0]  # type: ignore
+            if isinstance(first_commit, dict):
+                commit_info = first_commit.get("commit", {})
+                if isinstance(commit_info, dict):
+                    author_info = commit_info.get("author", {})
+                    if isinstance(author_info, dict):
+                        commit_date = author_info.get("date", "")
+                        if commit_date:
+                            return commit_date.split("-")[0]
     except Exception as e:
         logger.warning(f"Failed to get last update time: {str(e)}")
     return str(datetime.now().year)
@@ -981,7 +1010,7 @@ async def process_github_repository(
     github_url: str,
     version: Optional[str],
     license_keywords: List[str] = ["license", "licenses", "copying", "notice"],
-    name: str = None
+    name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Processes a GitHub repository to extract license information.
@@ -1037,7 +1066,7 @@ async def process_github_repository(
                 substep_logger.info(f"NuGet API 成功，返回 NuGet 结果")
                 return nuget_result
 
-            github_url = await find_github_url_from_package_url(github_url, name)
+            github_url = await find_github_url_from_package_url(github_url, name) or github_url
             if not github_url:
                 substep_logger.warning(f"Could not find GitHub URL for {github_url}")
                 return {
@@ -1168,7 +1197,7 @@ async def process_github_repository(
                             "license_files": license_url,
                             "license_analysis": license_file_analysis,
                             "has_license_conflict": False,
-                            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
+                            "readme_license": None,
                             "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "copyright_notice": copyright_notice,
                             "status": "success",
@@ -1204,7 +1233,7 @@ async def process_github_repository(
             readme_path = find_readme(tree)
 
         readme_content = None
-        readme_license_analysis = None
+        readme_license_analysis = None  # 初始化为None
         if readme_path:
             substep_logger.info(f"Found README at: {readme_path}")
             readme_content = await api.get_file_content(owner, repo, readme_path, resolved_version)
@@ -1261,7 +1290,7 @@ async def process_github_repository(
                 license_file_analysis_result["thirdparty_dirs"] = thirdparty_dirs
             # 只要分析有结果，直接返回
             if license_file_analysis_result and license_file_analysis_result.get("licenses"):
-                determination_reason = f"Found license files in {sub_path or 'root'}, selected primary: {selected_license_file['filename']}"
+                determination_reason = f"Found license files in {sub_path or 'root'}, selected primary: {selected_license_file['filename'] if selected_license_file else ''}"
                 copyright_notice = await construct_copyright_notice_async(
                     await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
                     None, license_content
@@ -1273,11 +1302,11 @@ async def process_github_repository(
                     "resolved_version": resolved_version,
                     "used_default_branch": used_default_branch,
                     "component_name": component_name,
-                    "license_files": selected_license_file['url'],  # 返回选中的主要license文件URL
+                    "license_files": selected_license_file['url'] if selected_license_file else '',  # 返回选中的主要license文件URL
                     "license_analysis": license_file_analysis_result,
                     "license_type": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "has_license_conflict": False,
-                    "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
+                    "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                     "license_file_license": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "copyright_notice": copyright_notice,
                     "status": "success",
@@ -1304,7 +1333,7 @@ async def process_github_repository(
                 "license_files": license_url,
                 "license_analysis": license_file_analysis,
                 "has_license_conflict": False,
-                "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
+                "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                 "license_file_license": license_type,  # 添加这行以确保license_file_license被设置
                 "copyright_notice": copyright_notice,
                 "status": "success",
@@ -1363,7 +1392,7 @@ async def process_github_repository(
                             "license_analysis": license_file_analysis,
                             "license_type": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "has_license_conflict": False,
-                            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
+                            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                             "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "copyright_notice": copyright_notice,
                             "status": "success",
@@ -1389,7 +1418,7 @@ async def process_github_repository(
                 "license_analysis": readme_license_analysis,
                 "license_type": readme_license_analysis.get("spdx_expression") or (readme_license_analysis["licenses"][0] if readme_license_analysis["licenses"] else None),
                 "has_license_conflict": False,
-                "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
+                "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                 "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis.get("licenses") else None,  # 从README中获取的许可证
                 "copyright_notice": copyright_notice,
                 "status": "success",
@@ -1420,10 +1449,10 @@ async def process_github_repository(
             "component_name": component_name,
             "license_files": license_files_value,
             "license_analysis": readme_license_analysis,
-            "license_type": readme_license_analysis.get("spdx_expression") or (readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None),
+            "license_type": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None else None or (readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis.get("licenses") else None),
             "has_license_conflict": False,
-            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis and readme_license_analysis.get("spdx_expression") else None,
-            "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis["licenses"] else None,  # 从README中获取的许可证
+            "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
+            "license_file_license": readme_license_analysis["licenses"][0] if readme_license_analysis and readme_license_analysis.get("licenses") else None,  # 从README中获取的许可证
             "copyright_notice": copyright_notice,
             "status": "success",
             "license_determination_reason": determination_reason
