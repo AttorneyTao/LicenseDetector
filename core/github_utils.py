@@ -635,7 +635,7 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
     if version:
         version_str = str(version).strip()
         # 检查是否匹配模式：可选的'v'前缀 + 0.0.0-时间戳-SHA格式
-        match = re.match(r'^v?0\.0\.0-\d{14}-([a-f0-9]+)$', version_str, re.IGNORECASE)
+        match = re.match(r'^v?\d+\.\d+\.\d+-\d{14}-([a-f0-9]+)$', version_str, re.IGNORECASE)
         if match:
             sha = match.group(1)[:7]  # 取第三节的前7位作为SHA
             version_resolve_logger.info(f"Version {version} detected as Go pseudo-version, extracted SHA: {sha}")
