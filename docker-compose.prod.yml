@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # 生产环境 - API服务 + 反向代理
+  analyzer-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: github-analyzer-api-prod
+    restart: always
+    environment:
+      # 从.env文件读取或容器环境变量
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - USE_LLM=${USE_LLM:-true}
+      - SMTP_SERVER=${SMTP_SERVER}
+      - SMTP_PORT=${SMTP_PORT}
+      - SENDER_EMAIL=${SENDER_EMAIL}
+      - SENDER_PASSWORD=${SENDER_PASSWORD}
+    volumes:
+      # 输出和日志持久化
+      - analyzer-outputs:/app/outputs
+      - analyzer-logs:/app/logs
+      - analyzer-temp:/app/temp
+    command: --api --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - analyzer-network
+
+  # Nginx反向代理（可选）
+  nginx:
+    image: nginx:alpine
+    container_name: github-analyzer-proxy
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro  # 如果使用HTTPS，需要证书
+    depends_on:
+      - analyzer-api
+    networks:
+      - analyzer-network
+
+# 持久化存储
+volumes:
+  analyzer-outputs:
+    driver: local
+  analyzer-logs:
+    driver: local
+  analyzer-temp:
+    driver: local
+
+# 网络
+networks:
+  analyzer-network:
+    driver: bridge

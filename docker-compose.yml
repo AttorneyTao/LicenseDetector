@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # CLI模式 - 用于本地文件处理
+  analyzer-cli:
+    build: .
+    container_name: github-analyzer-cli
+    volumes:
+      # 挂载输入文件目录
+      - ./input.xlsx:/app/input.xlsx:ro
+      # 挂载输出目录
+      - ./outputs:/app/outputs
+      # 挂载日志目录
+      - ./logs:/app/logs
+      # 挂载临时文件目录
+      - ./temp:/app/temp
+    env_file: .env
+    # 仅在明确运行时执行
+    profiles:
+      - cli
+
+  # API模式 - 用于HTTP接口
+  analyzer-api:
+    build: .
+    container_name: github-analyzer-api
+    ports:
+      # 暴露API端口
+      - "8000:8000"
+    volumes:
+      # 挂载输出目录
+      - ./outputs:/app/outputs
+      # 挂载日志目录
+      - ./logs:/app/logs
+      # 挂载临时文件目录
+      - ./temp:/app/temp
+    env_file: .env
+    command: --api --host 0.0.0.0 --port 8000
+    # 仅在明确运行时执行
+    profiles:
+      - api
+
+# 命名volume（可选，用于持久化数据）
+volumes:
+  analyzer-outputs:
+  analyzer-logs:
+  analyzer-temp:

@@ -59,6 +59,7 @@ os.makedirs("temp", exist_ok=True)
 # Set up logging
 setup_logging()
 
+# Load environment variables from .env file
 load_dotenv()
 
 # Configuration
@@ -76,33 +77,39 @@ sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
 
 # Validate LLM API configuration only if LLM is enabled
+# Validate LLM API configuration only if LLM is enabled
 if USE_LLM:
-    # Get the current provider from LLM_CONFIG
-    provider = LLM_CONFIG.get("provider", "gemini")
-    
-    if provider.lower() == "gemini":
+    provider = (LLM_CONFIG.get("provider") or "gemini").lower()
+    api_key_found = False
+
+    if provider == "gemini":
         gemini_config = LLM_CONFIG.get("gemini", {})
         api_key = gemini_config.get("api_key") or os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            logger.error("GEMINI_API_KEY environment variable not set")
-            raise ValueError("GEMINI_API_KEY environment variable not set")
-        
-        # Initialize Gemini client using the proper way according to the llm_provider abstraction
-        # Remove direct genai.configure call since it's handled in llm_provider.py
-        model = gemini_config.get("model", "gemini-2.5-flash")
-        logger.info(f"Initialized Gemini API with model: {model}")
-    elif provider.lower() == "qwen":
+        if api_key:
+            api_key_found = True
+            model = gemini_config.get("model", "gemini-2.5-flash")
+            logger.info(f"Initialized Gemini API with model: {model}")
+        else:
+            logger.warning("GEMINI_API_KEY not found...")
+
+    elif provider == "qwen":
         qwen_config = LLM_CONFIG.get("qwen", {})
         api_key = qwen_config.get("api_key") or os.getenv("DASHSCOPE_API_KEY")
-        if not api_key:
-            logger.error("DASHSCOPE_API_KEY environment variable not set")
-            raise ValueError("DASHSCOPE_API_KEY environment variable not set")
-        # Qwen uses OpenAI-compatible API, no specific initialization needed here
-        model = qwen_config.get("model", "qwen-plus")
-        logger.info(f"Initialized Qwen API with model: {model}")
+        if api_key:
+            api_key_found = True
+            model = qwen_config.get("model", "qwen-plus")
+            logger.info(f"Initialized Qwen API with model: {model}")
+        else:
+            logger.warning("DASHSCOPE_API_KEY not found...")
+
     else:
-        logger.error(f"Unsupported LLM provider: {provider}")
+        # 只有这里才是“真的不支持”
         raise ValueError(f"Unsupported LLM provider: {provider}")
+
+    # key 缺失 -> 禁用 LLM（不要去引用 qwen_config）
+    if not api_key_found:
+        logger.warning("⚠️  LLM API key not configured. Disabling LLM analysis.")
+        USE_LLM = False
 
 
 
@@ -130,6 +137,7 @@ if USE_LLM:
 
 import asyncio
 from tqdm import tqdm
+import argparse
 
 async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
     logger = logging.getLogger('main')
@@ -423,10 +431,54 @@ async def main_async():
 
 def main():
     """同步入口函数"""
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(
+        description='GitHub License Analyzer - 许可证分析工具',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+示例:
+  # 运行CLI模式（默认）
+  python main.py
+
+  # 运行API服务
+  python main.py --api
+
+  # 运行API服务并指定端口
+  python main.py --api --port 8080
+        '''
+    )
+    
+    parser.add_argument(
+        '--api',
+        action='store_true',
+        help='启动API服务而不是CLI模式'
+    )
+    parser.add_argument(
+        '--host',
+        default='0.0.0.0',
+        help='API服务器监听地址 (默认: 0.0.0.0)'
+    )
+    parser.add_argument(
+        '--port',
+        type=int,
+        default=8000,
+        help='API服务器监听端口 (默认: 8000)'
+    )
+    
+    args = parser.parse_args()
+    
     try:
-        asyncio.run(main_async())
+        if args.api:
+            # 运行API服务
+            from api import run_api_server
+            logger.info(f"启动API服务模式: {args.host}:{args.port}")
+            run_api_server(host=args.host, port=args.port)
+        else:
+            # 运行CLI模式
+            logger.info("启动CLI分析模式")
+            asyncio.run(main_async())
     except Exception as e:
-        logger.error(f"Failed to run main_async: {str(e)}", exc_info=True)
+        logger.error(f"Failed to run: {str(e)}", exc_info=True)
         sys.exit(1)
 
 # ============================================================================
