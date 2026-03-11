@@ -40,6 +40,8 @@ from core.github_utils import GitHubAPI
 from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column
 from core.go_utils import  get_github_url_from_pkggo
+from core.npm_utils import process_npm_repository
+from core.crate_utils import process_crate_repository
 
 # ============================================================================
 # Load Prompts Section
@@ -195,12 +197,26 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         if url.startswith("https://pkg.go.dev/") or url.startswith("https://go.dev/") or re.match(r"^go\.[\w\.-]+/", url):
                             is_go_pkg = True
 
+                    # 新增：判断是否为 npm 包
+                    is_npm_pkg = False
+                    if isinstance(url, str):
+                        # 支持 npmjs.com、npmmirror.com 等常见格式
+                        if "npmjs.com/package" in url or "npmmirror.com/package" in url or (url.startswith("@") and "/" in url):
+                            is_npm_pkg = True
+                    
+                    # 新增：判断是否为 crate.io Rust 包
+                    is_crate_pkg = False
+                    if isinstance(url, str):
+                        # 支持 crates.io/crates 格式
+                        if "crates.io/crates" in url:
+                            is_crate_pkg = True
+
                     if is_go_pkg:
                         logger.info(f"检测到 Go 包 URL: {url}，尝试 get_github_url")
                         github_info = await get_github_url_from_pkggo(url, version, name)
                         github_url = github_info.get("github_url")
                         if github_url:
-                            logger.info(f"get_github_url 成功，继续走 GitHub 流程: {github_url}")
+                            logger.info(f"get_github_url 成功，继续走 GitHub 流程：{github_url}")
                             result = await process_github_repository(
                                 api,
                                 github_url,
@@ -208,13 +224,22 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                 name=name
                             )
                         else:
-                            logger.info(f"get_github_url 失败,改用大模型方案")
+                            logger.info(f"get_github_url 失败，改用大模型方案")
                             result = await process_github_repository(
                                 api,
                                 url,
                                 version,
                                 name=name
                             )
+                    
+                    elif is_npm_pkg:
+                        logger.info(f"检测到 npm 包 URL: {url}，调用 npm_utils 处理")
+                        result = await process_npm_repository(url, version)
+                    
+                    elif is_crate_pkg:
+                        logger.info(f"检测到 crate.io 包 URL: {url}，调用 crate_utils 处理")
+                        result = await process_crate_repository(url, version)
+                    
                     else:
                         # 修改：对于 Maven URL（包括 mvnrepository.com 和 repo1.maven.org），先走默认的 GitHub 流程
                         is_maven_url = isinstance(url, str) and (
