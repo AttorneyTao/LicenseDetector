@@ -38,7 +38,7 @@ logger = loggers.get("main", logging.getLogger(__name__))
 # ============================================================================
 class AsyncStreamingLogHandler(logging.Handler):
     """自定义处理器，用于捕获特定级别的日志"""
-    def __init__(self, log_queue: asyncio.Queue, min_level: int = logging.WARNING):
+    def __init__(self, log_queue: asyncio.Queue, min_level: int = logging.INFO):
         super().__init__()
         self.log_queue = log_queue
         self.min_level = min_level
@@ -344,8 +344,8 @@ async def analyze_with_stream(
         temp_input = None
         
         try:
-            # 创建日志队列
-            log_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+            # 创建日志队列（容纳更多日志消息）
+            log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
             
             # 创建临时文件
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
@@ -357,7 +357,7 @@ async def analyze_with_stream(
             # 添加流式日志处理器
             stream_handler = AsyncStreamingLogHandler(
                 log_queue=log_queue,
-                min_level=logging.WARNING
+                min_level=logging.INFO
             )
             stream_handler.setFormatter(
                 logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -366,6 +366,10 @@ async def analyze_with_stream(
             # 为所有相关日志记录器添加处理器
             main_logger = logging.getLogger('__main__')
             main_logger.addHandler(stream_handler)
+            
+            # 也添加到实际使用的日志记录器
+            core_logger = logging.getLogger('main')
+            core_logger.addHandler(stream_handler)
             
             try:
                 yield f"[START] 开始处理文件: {file.filename}\n"
@@ -399,7 +403,7 @@ async def analyze_with_stream(
                             yield f"{log_msg}\n"
                         except asyncio.QueueEmpty:
                             # 队列为空，等待一下再继续
-                            await asyncio.sleep(0.1)
+                            await asyncio.sleep(0.05)
                     except Exception as e:
                         yield f"[ERROR] 日志处理错误: {str(e)}\n"
                         break
@@ -466,8 +470,8 @@ async def analyze_with_stream_and_email(
                 yield "[ERROR] 无效的邮箱地址\n"
                 return
             
-            # 创建日志队列
-            log_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+            # 创建日志队列（容纳更多日志消息）
+            log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
             
             # 创建临时文件
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
@@ -479,7 +483,7 @@ async def analyze_with_stream_and_email(
             # 添加流式日志处理器
             stream_handler = AsyncStreamingLogHandler(
                 log_queue=log_queue,
-                min_level=logging.WARNING
+                min_level=logging.INFO
             )
             stream_handler.setFormatter(
                 logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -488,6 +492,10 @@ async def analyze_with_stream_and_email(
             # 为所有相关日志记录器添加处理器
             main_logger = logging.getLogger('__main__')
             main_logger.addHandler(stream_handler)
+            
+            # 也添加到实际使用的日志记录器
+            core_logger = logging.getLogger('main')
+            core_logger.addHandler(stream_handler)
             
             try:
                 yield f"[START] 开始处理文件: {file.filename}\n"
@@ -519,7 +527,7 @@ async def analyze_with_stream_and_email(
                             log_msg = log_queue.get_nowait()
                             yield f"{log_msg}\n"
                         except asyncio.QueueEmpty:
-                            await asyncio.sleep(0.1)
+                            await asyncio.sleep(0.05)
                     except Exception as e:
                         yield f"[ERROR] 日志处理错误: {str(e)}\n"
                         break
@@ -612,8 +620,8 @@ async def analyze_with_stream_and_download(
     temp_output = None
     
     try:
-        # 创建日志队列
-        log_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        # 创建日志队列（容纳更多日志消息）
+        log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
         
         # 创建临时文件
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
@@ -625,7 +633,7 @@ async def analyze_with_stream_and_download(
         # 添加流式日志处理器
         stream_handler = AsyncStreamingLogHandler(
             log_queue=log_queue,
-            min_level=logging.WARNING
+            min_level=logging.INFO
         )
         stream_handler.setFormatter(
             logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -634,6 +642,10 @@ async def analyze_with_stream_and_download(
         # 为所有相关日志记录器添加处理器
         main_logger = logging.getLogger('__main__')
         main_logger.addHandler(stream_handler)
+        
+        # 也添加到实际使用的日志记录器
+        core_logger = logging.getLogger('main')
+        core_logger.addHandler(stream_handler)
         
         try:
             logger.info(f"接收到文件: {file.filename}, 保存至: {temp_input}")
@@ -705,8 +717,21 @@ async def _process_repositories(api, df, log_queue=None):
     
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     results = {}
+    completed_count = 0
+    total_count = len(df)
+    lock = asyncio.Lock()
+    
+    async def log_progress():
+        """输出处理进度"""
+        if log_queue:
+            try:
+                progress_pct = (completed_count / total_count * 100) if total_count > 0 else 0
+                log_queue.put_nowait(f"[PROGRESS] 已完成 {completed_count}/{total_count} ({progress_pct:.1f}%)")
+            except:
+                pass
     
     async def process_single(row, index):
+        nonlocal completed_count
         async with sem:
             name = None
             try:
@@ -813,6 +838,13 @@ async def _process_repositories(api, df, log_queue=None):
                     "error": str(e),
                     "input_name": name
                 }
+            finally:
+                # 更新进度计数
+                async with lock:
+                    completed_count += 1
+                    # 每完成5个任务或最后一个任务时输出进度
+                    if completed_count % 5 == 0 or completed_count == total_count:
+                        await log_progress()
     
     # Process all rows
     tasks = [process_single(row, idx) for idx, row in df.iterrows()]
