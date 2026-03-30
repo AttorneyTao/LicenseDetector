@@ -92,7 +92,49 @@ curl -X POST "http://localhost:8000/api/v1/analyze" \
 }
 ```
 
-### 端点 2: 分析并下载文件
+### 端点 2: 流式日志输出
+
+**URL**: `POST /api/v1/analyze-stream`
+
+实时流式返回分析过程中的日志（错误、警告和进度信息），无需等待处理完成。适合希望监控分析进程的场景。
+
+**请求参数**:
+- `file` (required): 上传的Excel文件
+
+**请求示例**:
+
+```bash
+# 使用curl（--no-buffer保证实时输出）
+curl -X POST "http://localhost:8000/api/v1/analyze-stream" \
+  -F "file=@input.xlsx" \
+  --no-buffer
+
+# 将流式日志保存到文件
+curl -X POST "http://localhost:8000/api/v1/analyze-stream" \
+  -F "file=@input.xlsx" \
+  --no-buffer > analysis_logs.txt
+```
+
+**响应示例**（流式文本）:
+```
+[START] 开始处理文件: input.xlsx
+[INFO] 读取了 50 行数据
+[INFO] GitHub API 客户端已初始化
+[INFO] 开始处理仓库...
+[INFO] 检测到 Go 包 URL: go.mod
+[WARNING] 无法获取许可证信息: 404 Not Found
+[ERROR] 处理失败 https://github.com/example/repo: Timeout
+[SUCCESS] 处理完成，共处理 50 行数据
+```
+
+**日志级别**:
+- `[START]` - 开始处理
+- `[INFO]` - 信息提示
+- `[WARNING]` - 警告信息
+- `[ERROR]` - 错误信息
+- `[SUCCESS]` - 完成
+
+### 端点 3: 分析并下载文件
 
 **URL**: `POST /api/v1/analyze-and-download`
 
@@ -111,7 +153,7 @@ curl -X POST "http://localhost:8000/api/v1/analyze-and-download" \
 
 **响应**: 返回处理后的Excel文件
 
-### 端点 3: 健康检查
+### 端点 4: 健康检查
 
 **URL**: `GET /health`
 
@@ -146,6 +188,15 @@ response = requests.post(
 )
 print(response.json())
 
+# 流式日志输出（实时监控分析进程）
+response = requests.post(
+    "http://localhost:8000/api/v1/analyze-stream",
+    files={"file": open("input.xlsx", "rb")},
+    stream=True
+)
+for line in response.iter_lines():
+    print(line.decode('utf-8'))
+
 # 分析并下载
 response = requests.post(
     "http://localhost:8000/api/v1/analyze-and-download",
@@ -153,6 +204,25 @@ response = requests.post(
 )
 with open("result.xlsx", "wb") as f:
     f.write(response.content)
+```
+
+### 高级用法：带进度条的流式请求
+
+```python
+import requests
+from tqdm import tqdm
+
+response = requests.post(
+    "http://localhost:8000/api/v1/analyze-stream",
+    files={"file": open("input.xlsx", "rb")},
+    stream=True
+)
+
+# 实时处理流式响应
+print("分析进程日志:")
+for line in response.iter_lines():
+    if line:
+        print(line.decode('utf-8'))
 ```
 
 ## 错误处理
@@ -186,7 +256,28 @@ API默认使用以下配置：
 
 ## 常见问题
 
-### 1. 邮件发送失败
+### 1. 如何监控分析进程？
+
+使用流式日志端点 `/api/v1/analyze-stream` 实时查看分析过程中的日志：
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/analyze-stream" \
+  -F "file=@input.xlsx" \
+  --no-buffer
+```
+
+或在Python中：
+```python
+response = requests.post(
+    "http://localhost:8000/api/v1/analyze-stream",
+    files={"file": open("input.xlsx", "rb")},
+    stream=True
+)
+for line in response.iter_lines():
+    print(line.decode('utf-8'))
+```
+
+### 2. 邮件发送失败
 - 确认SMTP服务器配置正确
 - 检查邮箱密码（某些邮箱需要应用专用密码）
 - 确认网络连接正常
@@ -226,7 +317,11 @@ gunicorn -w 4 -k uvicorn.workers.UvicornWorker api:app --bind 0.0.0.0:8000
 ## 文件说明
 
 - `main.py`: 主入口，支持CLI和API模式
-- `api.py`: FastAPI应用实现
+- `api.py`: FastAPI应用实现，包含3个分析端点和健康检查端点
+  - `POST /api/v1/analyze`: 分析并发送邮件
+  - `POST /api/v1/analyze-stream`: 流式日志输出（新增）
+  - `POST /api/v1/analyze-and-download`: 分析并下载
+  - `GET /health`: 健康检查
 - `core/email_utils.py`: 邮件发送工具
 - `pyproject.toml`: 已更新，包含fastapi、uvicorn等依赖
 

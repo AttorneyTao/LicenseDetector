@@ -7,12 +7,13 @@ import sys
 import logging
 import asyncio
 import tempfile
+import io
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, AsyncGenerator
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import existing modules
@@ -30,6 +31,45 @@ from tqdm import tqdm
 # Setup logging
 loggers = setup_logging()
 logger = loggers.get("main", logging.getLogger(__name__))
+
+
+# ============================================================================
+# Streaming Log Handler for API Responses
+# ============================================================================
+class AsyncStreamingLogHandler(logging.Handler):
+    """自定义处理器，用于捕获特定级别的日志"""
+    def __init__(self, log_queue: asyncio.Queue, min_level: int = logging.WARNING):
+        super().__init__()
+        self.log_queue = log_queue
+        self.min_level = min_level
+    
+    def emit(self, record: logging.LogRecord):
+        """将日志消息发送到队列"""
+        if record.levelno >= self.min_level:
+            try:
+                message = self.format(record)
+                # 不阻塞，直接放入队列
+                if not self.log_queue.full():
+                    self.log_queue.put_nowait(message)
+            except Exception:
+                self.handleError(record)
+
+
+class TqdmStreamingIO(io.StringIO):
+    """用于捕获tqdm输出的自定义IO类"""
+    def __init__(self, log_queue: asyncio.Queue):
+        super().__init__()
+        self.log_queue = log_queue
+    
+    def write(self, s):
+        if s.strip():  # 只记录非空行
+            try:
+                if not self.log_queue.full():
+                    self.log_queue.put_nowait(s.rstrip())
+            except Exception:
+                pass
+        return super().write(s)
+
 
 # Create FastAPI app
 app = FastAPI(
@@ -287,7 +327,118 @@ async def analyze_and_download(
                 logger.warning(f"删除临时输入文件失败: {e}")
 
 
-async def _process_repositories(api, df):
+@app.post("/api/v1/analyze-stream")
+async def analyze_with_stream(
+    file: UploadFile = File(...)
+):
+    """
+    分析许可证信息并流式返回日志（错误、警告和进度条）
+    
+    Args:
+        file: 上传的Excel文件 (input.xlsx)
+        
+    Returns:
+        流式日志响应
+    """
+    async def log_generator() -> AsyncGenerator[str, None]:
+        temp_input = None
+        
+        try:
+            # 创建日志队列
+            log_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+            
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
+                temp_input = tmp_input.name
+                content = await file.read()
+                tmp_input.write(content)
+                tmp_input.flush()
+            
+            # 添加流式日志处理器
+            stream_handler = AsyncStreamingLogHandler(
+                log_queue=log_queue,
+                min_level=logging.WARNING
+            )
+            stream_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            )
+            
+            # 为所有相关日志记录器添加处理器
+            main_logger = logging.getLogger('__main__')
+            main_logger.addHandler(stream_handler)
+            
+            try:
+                yield f"[START] 开始处理文件: {file.filename}\n"
+                
+                # 读取Excel文件
+                try:
+                    df = pd.read_excel(temp_input)
+                    yield f"[INFO] 读取了 {len(df)} 行数据\n"
+                except Exception as e:
+                    yield f"[ERROR] 无法读取Excel文件: {str(e)}\n"
+                    return
+                
+                # 初始化API
+                api = await get_github_api()
+                yield "[INFO] GitHub API 客户端已初始化\n"
+                
+                # 处理仓库（带流式日志）
+                yield "[INFO] 开始处理仓库...\n"
+                
+                # 创建一个任务来处理仓库
+                process_task = asyncio.create_task(
+                    _process_repositories(api, df, log_queue)
+                )
+                
+                # 实时读取日志队列
+                while not process_task.done():
+                    try:
+                        # 尝试从队列中获取日志（非阻塞）
+                        try:
+                            log_msg = log_queue.get_nowait()
+                            yield f"{log_msg}\n"
+                        except asyncio.QueueEmpty:
+                            # 队列为空，等待一下再继续
+                            await asyncio.sleep(0.1)
+                    except Exception as e:
+                        yield f"[ERROR] 日志处理错误: {str(e)}\n"
+                        break
+                
+                # 等待任务完成
+                results = await process_task
+                
+                # 输出所有剩余的队列消息
+                while True:
+                    try:
+                        log_msg = log_queue.get_nowait()
+                        yield f"{log_msg}\n"
+                    except asyncio.QueueEmpty:
+                        break
+                
+                yield f"[SUCCESS] 处理完成，共处理 {len(results)} 行数据\n"
+                
+            finally:
+                # 移除处理器
+                main_logger.removeHandler(stream_handler)
+            
+        except Exception as e:
+            yield f"[ERROR] 处理请求时出错: {str(e)}\n"
+        finally:
+            # 清理临时文件
+            if temp_input and os.path.exists(temp_input):
+                try:
+                    os.unlink(temp_input)
+                except Exception:
+                    pass
+    
+    return StreamingResponse(
+        log_generator(),
+        media_type="text/plain; charset=utf-8"
+    )
+
+
+
+async def _process_repositories(api, df, log_queue=None):
     """Process all repositories with concurrency control"""
     from core.github_utils import normalize_github_url
     import re
@@ -312,6 +463,11 @@ async def _process_repositories(api, df):
                 
                 if is_go_pkg:
                     logger.info(f"检测到 Go 包 URL: {url}")
+                    if log_queue:
+                        try:
+                            log_queue.put_nowait(f"[INFO] 检测到 Go 包 URL: {url}")
+                        except:
+                            pass
                     github_info = await get_github_url_from_pkggo(url, version, name)
                     github_url = github_info.get("github_url")
                     if github_url:
@@ -326,10 +482,20 @@ async def _process_repositories(api, df):
                     )
                     if is_maven_url:
                         logger.info(f"检测到 Maven URL: {url}")
+                        if log_queue:
+                            try:
+                                log_queue.put_nowait(f"[INFO] 检测到 Maven URL: {url}")
+                            except:
+                                pass
                         result = await process_github_repository(api, url, version, name=name)
                         
                         if result.get("status") != "success":
                             logger.info(f"GitHub 流程未成功，调用 Maven 处理函数")
+                            if log_queue:
+                                try:
+                                    log_queue.put_nowait(f"[INFO] GitHub 流程未成功，调用 Maven 处理函数")
+                                except:
+                                    pass
                             try:
                                 maven_result = analyze_maven_repository_url(url)
                                 license_file_url = f"https://mvnrepository.com/artifact/{maven_result['group_id']}/{maven_result['artifact_id']}/{maven_result.get('version', '')}"
@@ -362,6 +528,11 @@ async def _process_repositories(api, df):
                                 }
                             except Exception as e:
                                 logger.warning(f"Maven 处理失败: {e}")
+                                if log_queue:
+                                    try:
+                                        log_queue.put_nowait(f"[WARNING] Maven 处理失败: {e}")
+                                    except:
+                                        pass
                     else:
                         result = await process_github_repository(api, url, version, name=name)
                 
@@ -371,6 +542,11 @@ async def _process_repositories(api, df):
                 
             except Exception as e:
                 logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
+                if log_queue:
+                    try:
+                        log_queue.put_nowait(f"[ERROR] 处理失败 {row.get('github_url')}: {e}")
+                    except:
+                        pass
                 results[index] = {
                     "input_url": row.get("github_url"),
                     "status": "error",
