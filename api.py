@@ -437,6 +437,266 @@ async def analyze_with_stream(
     )
 
 
+@app.post("/api/v1/analyze-stream-email")
+async def analyze_with_stream_and_email(
+    file: UploadFile = File(...),
+    email: str = Form(...),
+    smtp_server: Optional[str] = Form(None),
+    smtp_port: Optional[int] = Form(None),
+):
+    """
+    分析许可证信息，流式返回日志，完成后发送邮件
+    
+    Args:
+        file: 上传的Excel文件 (input.xlsx)
+        email: 接收结果的邮箱地址
+        smtp_server: SMTP服务器地址（可选）
+        smtp_port: SMTP端口（可选）
+        
+    Returns:
+        流式日志响应，最后输出邮件发送状态
+    """
+    async def log_generator() -> AsyncGenerator[str, None]:
+        temp_input = None
+        temp_output = None
+        
+        try:
+            # 验证邮箱格式
+            if not email or "@" not in email:
+                yield "[ERROR] 无效的邮箱地址\n"
+                return
+            
+            # 创建日志队列
+            log_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+            
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
+                temp_input = tmp_input.name
+                content = await file.read()
+                tmp_input.write(content)
+                tmp_input.flush()
+            
+            # 添加流式日志处理器
+            stream_handler = AsyncStreamingLogHandler(
+                log_queue=log_queue,
+                min_level=logging.WARNING
+            )
+            stream_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            )
+            
+            # 为所有相关日志记录器添加处理器
+            main_logger = logging.getLogger('__main__')
+            main_logger.addHandler(stream_handler)
+            
+            try:
+                yield f"[START] 开始处理文件: {file.filename}\n"
+                
+                # 读取Excel文件
+                try:
+                    df = pd.read_excel(temp_input)
+                    yield f"[INFO] 读取了 {len(df)} 行数据\n"
+                except Exception as e:
+                    yield f"[ERROR] 无法读取Excel文件: {str(e)}\n"
+                    return
+                
+                # 初始化API
+                api = await get_github_api()
+                yield "[INFO] GitHub API 客户端已初始化\n"
+                
+                # 处理仓库（带流式日志）
+                yield "[INFO] 开始处理仓库...\n"
+                
+                # 创建一个任务来处理仓库
+                process_task = asyncio.create_task(
+                    _process_repositories(api, df, log_queue)
+                )
+                
+                # 实时读取日志队列
+                while not process_task.done():
+                    try:
+                        try:
+                            log_msg = log_queue.get_nowait()
+                            yield f"{log_msg}\n"
+                        except asyncio.QueueEmpty:
+                            await asyncio.sleep(0.1)
+                    except Exception as e:
+                        yield f"[ERROR] 日志处理错误: {str(e)}\n"
+                        break
+                
+                # 等待任务完成
+                results = await process_task
+                
+                # 输出所有剩余的队列消息
+                while True:
+                    try:
+                        log_msg = log_queue.get_nowait()
+                        yield f"{log_msg}\n"
+                    except asyncio.QueueEmpty:
+                        break
+                
+                yield f"[INFO] 处理完成，共处理 {len(results)} 行数据\n"
+                
+                # 生成输出
+                yield "[INFO] 生成输出文件...\n"
+                output_df = _generate_output(results)
+                
+                # 保存输出文件
+                with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_output:
+                    temp_output = tmp_output.name
+                
+                with pd.ExcelWriter(temp_output, engine='openpyxl') as writer:
+                    output_df.to_excel(writer, sheet_name='分析结果', index=False)
+                
+                yield "[INFO] 输出文件已生成\n"
+                
+                # 发送邮件
+                yield f"[INFO] 正在发送结果到邮箱: {email}\n"
+                email_config = None
+                if smtp_server or smtp_port:
+                    email_config = EmailConfig(
+                        smtp_server=smtp_server,
+                        smtp_port=smtp_port
+                    )
+                
+                email_sent = send_analysis_result(
+                    recipient_email=email,
+                    output_file_path=temp_output,
+                    smtp_config=email_config
+                )
+                
+                if email_sent:
+                    yield f"[SUCCESS] 邮件已发送到: {email}\n"
+                else:
+                    yield f"[ERROR] 邮件发送失败，请检查配置\n"
+                
+            finally:
+                # 移除处理器
+                main_logger.removeHandler(stream_handler)
+            
+        except Exception as e:
+            yield f"[ERROR] 处理请求时出错: {str(e)}\n"
+        finally:
+            # 清理临时文件
+            if temp_input and os.path.exists(temp_input):
+                try:
+                    os.unlink(temp_input)
+                except Exception:
+                    pass
+            if temp_output and os.path.exists(temp_output):
+                try:
+                    os.unlink(temp_output)
+                except Exception:
+                    pass
+    
+    return StreamingResponse(
+        log_generator(),
+        media_type="text/plain; charset=utf-8"
+    )
+
+
+@app.post("/api/v1/analyze-stream-download")
+async def analyze_with_stream_and_download(
+    file: UploadFile = File(...)
+):
+    """
+    分析许可证信息，流式返回日志，完成后返回Excel文件
+    
+    Args:
+        file: 上传的Excel文件 (input.xlsx)
+        
+    Returns:
+        先流式输出日志，然后返回Excel文件
+    """
+    temp_input = None
+    temp_output = None
+    
+    try:
+        # 创建日志队列
+        log_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
+            temp_input = tmp_input.name
+            content = await file.read()
+            tmp_input.write(content)
+            tmp_input.flush()
+        
+        # 添加流式日志处理器
+        stream_handler = AsyncStreamingLogHandler(
+            log_queue=log_queue,
+            min_level=logging.WARNING
+        )
+        stream_handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        )
+        
+        # 为所有相关日志记录器添加处理器
+        main_logger = logging.getLogger('__main__')
+        main_logger.addHandler(stream_handler)
+        
+        try:
+            logger.info(f"接收到文件: {file.filename}, 保存至: {temp_input}")
+            
+            # 读取Excel文件
+            try:
+                df = pd.read_excel(temp_input)
+                logger.info(f"读取了 {len(df)} 行数据")
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"无法读取Excel文件: {str(e)}"
+                )
+            
+            # 初始化API
+            api = await get_github_api()
+            
+            # 处理仓库
+            logger.info("开始处理仓库...")
+            results = await _process_repositories(api, df, log_queue)
+            
+            # 生成输出
+            logger.info("生成输出文件...")
+            output_df = _generate_output(results)
+            
+            # 保存输出文件
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_output:
+                temp_output = tmp_output.name
+            
+            with pd.ExcelWriter(temp_output, engine='openpyxl') as writer:
+                output_df.to_excel(writer, sheet_name='分析结果', index=False)
+            
+            logger.info(f"输出文件已保存: {temp_output}")
+            
+            # 返回文件
+            return FileResponse(
+                path=temp_output,
+                filename=f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            
+        finally:
+            # 移除处理器
+            main_logger.removeHandler(stream_handler)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"处理请求时出错: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"处理失败: {str(e)}"
+        )
+    finally:
+        # 清理临时文件
+        if temp_input and os.path.exists(temp_input):
+            try:
+                os.unlink(temp_input)
+                logger.debug(f"已删除临时输入文件: {temp_input}")
+            except Exception as e:
+                logger.warning(f"删除临时输入文件失败: {e}")
+
+
 
 async def _process_repositories(api, df, log_queue=None):
     """Process all repositories with concurrency control"""
