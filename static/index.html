@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub 仓库许可证分析器</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="header-left">
+                <svg class="logo-icon" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 12l2 2 4-4"/>
+                    <path d="M12 3c7.2 0 9 1.8 9 9s-1.8 9-9 9-9-1.8-9-9 1.8-9 9-9z"/>
+                </svg>
+                <h1 class="header-title">GitHub 仓库许可证分析器</h1>
+            </div>
+            <div class="header-right">
+                <div class="health-badge" id="healthBadge">
+                    <span class="health-dot"></span>
+                    <span class="health-text">检查中...</span>
+                </div>
+                <button class="theme-toggle" id="themeToggle" title="切换主题">
+                    <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                    </svg>
+                    <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Upload Card -->
+        <section class="card upload-card">
+            <h2 class="card-title">上传分析文件</h2>
+            <div class="drop-zone" id="dropZone">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <p class="drop-zone-text">拖拽 Excel 文件到此处，或点击选择</p>
+                <p class="drop-zone-hint">支持 .xlsx 格式，最大 10MB</p>
+                <input type="file" id="fileInput" accept=".xlsx" hidden>
+            </div>
+            <div class="file-info" id="fileInfo" hidden>
+                <div class="file-info-detail">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                    <span class="file-name" id="fileName"></span>
+                    <span class="file-size" id="fileSize"></span>
+                </div>
+                <button class="btn-icon" id="removeFile" title="移除文件">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- File Preview -->
+            <div class="file-preview" id="filePreview" hidden>
+                <h3 class="preview-title">文件预览（前5行）</h3>
+                <div class="preview-table-wrap" id="previewTableWrap"></div>
+            </div>
+
+            <!-- Mode Selection -->
+            <div class="mode-section">
+                <label class="radio-label">
+                    <input type="radio" name="mode" value="download" checked>
+                    <span class="radio-custom"></span>
+                    下载结果
+                </label>
+                <label class="radio-label">
+                    <input type="radio" name="mode" value="email">
+                    <span class="radio-custom"></span>
+                    发送到邮箱
+                </label>
+            </div>
+            <div class="email-section" id="emailSection" hidden>
+                <input type="email" class="input-email" id="emailInput" placeholder="请输入接收邮箱地址">
+            </div>
+
+            <button class="btn-primary" id="startBtn" disabled>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                开始分析
+            </button>
+        </section>
+
+        <!-- Progress Panel -->
+        <section class="card progress-card" id="progressCard" hidden>
+            <h2 class="card-title">分析进度</h2>
+            <div class="progress-bar-wrap">
+                <div class="progress-bar" id="progressBar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <span class="progress-text" id="progressText">0%</span>
+            </div>
+            <p class="status-text" id="statusText">准备中...</p>
+
+            <!-- Log Toolbar -->
+            <div class="log-toolbar">
+                <div class="log-filters">
+                    <button class="filter-btn active" data-filter="all">全部</button>
+                    <button class="filter-btn" data-filter="info">INFO</button>
+                    <button class="filter-btn" data-filter="error">ERROR</button>
+                    <button class="filter-btn" data-filter="progress">PROGRESS</button>
+                </div>
+                <div class="log-actions">
+                    <input type="text" class="log-search" id="logSearch" placeholder="搜索日志...">
+                    <button class="btn-icon" id="copyLogs" title="复制日志">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                        </svg>
+                    </button>
+                    <button class="btn-icon" id="exportLogs" title="导出日志">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Log Viewer -->
+            <div class="log-viewer" id="logViewer"></div>
+
+            <!-- Result Actions -->
+            <div class="result-actions" id="resultActions" hidden>
+                <button class="btn-primary" id="downloadResult">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    下载结果文件
+                </button>
+                <button class="btn-secondary" id="retryBtn">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+                    </svg>
+                    重新分析
+                </button>
+            </div>
+        </section>
+
+        <!-- History Panel -->
+        <section class="card history-card">
+            <div class="card-header">
+                <h2 class="card-title">分析历史</h2>
+                <button class="btn-text" id="clearHistory">清除历史</button>
+            </div>
+            <div class="history-list" id="historyList">
+                <p class="empty-hint">暂无分析记录</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <span>GitHub License Analyzer v0.1.0</span>
+        <a href="/docs" target="_blank">API 文档</a>
+    </footer>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="/static/js/stream-parser.js"></script>
+    <script src="/static/js/storage.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/components.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

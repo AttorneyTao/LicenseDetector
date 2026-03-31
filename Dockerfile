@@ -25,6 +25,7 @@ COPY README.md* ./
 COPY .env* ./
 COPY core/ ./core/
 COPY main.py api.py prompts.yaml ./
+COPY static/ ./static/
 
 # 安装Python依赖（直接从requirements）
 RUN pip install --no-cache-dir \

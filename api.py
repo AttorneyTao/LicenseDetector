@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Optional, AsyncGenerator
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import existing modules
@@ -118,6 +119,12 @@ async def shutdown_event():
     global _api_instance
     if _api_instance:
         await _api_instance.close()
+
+
+@app.get("/")
+async def root():
+    """Redirect to frontend"""
+    return RedirectResponse(url="/static/index.html")
 
 
 @app.get("/health")
@@ -902,6 +909,12 @@ def _generate_output(results):
     output_df = output_df[final_columns]
     
     return output_df
+
+
+# Mount static files (must be after all route definitions)
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 def run_api_server(host: str = "0.0.0.0", port: int = 8000):
