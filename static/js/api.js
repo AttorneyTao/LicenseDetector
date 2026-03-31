@@ -97,6 +97,21 @@ const ApiClient = {
     },
 
     /**
+     * Subscribe to the live log SSE stream (server monitor panel).
+     * @param {function} onMessage - Called with parsed JSON object per event
+     * @param {function} [onError]  - Called on connection error
+     * @returns {EventSource} The EventSource instance (caller can close it)
+     */
+    subscribeLiveLogs(onMessage, onError) {
+        const es = new EventSource(`${this.baseUrl}/api/v1/logs/live`);
+        es.onmessage = (event) => {
+            try { onMessage(JSON.parse(event.data)); } catch { /* malformed JSON — skip */ }
+        };
+        es.onerror = (err) => { if (onError) onError(err); };
+        return es;
+    },
+
+    /**
      * Consume a streaming text response line by line
      */
     async _consumeStream(resp, onLine) {

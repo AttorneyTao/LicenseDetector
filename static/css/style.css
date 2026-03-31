@@ -713,6 +713,106 @@ body {
     to { transform: translateX(100%); opacity: 0; }
 }
 
+/* ===== Server Monitor Panel ===== */
+.monitor-header {
+    margin-bottom: 12px;
+}
+
+.monitor-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.monitor-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.monitor-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    transition: background var(--transition);
+}
+
+.monitor-status-dot.ok {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+}
+
+.monitor-status-dot.error {
+    background: var(--error);
+    box-shadow: 0 0 6px var(--error);
+}
+
+.monitor-status-dot.connecting {
+    background: var(--warning);
+    animation: pulse 1.5s ease infinite;
+}
+
+.monitor-status-text {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.monitor-jobs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 28px;
+    align-items: center;
+}
+
+.monitor-no-jobs {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.monitor-job-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+}
+
+.monitor-job-chip.running {
+    border-color: var(--warning);
+    color: var(--warning);
+    animation: pulse 2s ease infinite;
+}
+
+.monitor-job-chip.success {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.monitor-job-chip.error {
+    border-color: var(--error);
+    color: var(--error);
+}
+
+.monitor-job-id {
+    font-family: monospace;
+    font-weight: 700;
+}
+
+.monitor-job-progress {
+    color: var(--text-secondary);
+}
+
+.monitor-log-viewer {
+    height: 280px;
+}
+
 /* ===== Responsive ===== */
 @media (max-width: 768px) {
     .header-title { font-size: 1rem; }

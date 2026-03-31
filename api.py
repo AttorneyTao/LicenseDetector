@@ -8,6 +8,8 @@ import logging
 import asyncio
 import tempfile
 import io
+import uuid
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, AsyncGenerator
@@ -61,7 +63,7 @@ class TqdmStreamingIO(io.StringIO):
     def __init__(self, log_queue: asyncio.Queue):
         super().__init__()
         self.log_queue = log_queue
-    
+
     def write(self, s):
         if s.strip():  # 只记录非空行
             try:
@@ -70,6 +72,86 @@ class TqdmStreamingIO(io.StringIO):
             except Exception:
                 pass
         return super().write(s)
+
+
+# ============================================================================
+# Global SSE Broadcaster
+# ============================================================================
+MAX_SSE_SUBSCRIBERS = 10
+
+
+class _Broadcaster:
+    """Registry of per-client asyncio.Queues for SSE delivery."""
+
+    def __init__(self):
+        self._subscribers: list = []
+        self._lock = asyncio.Lock()
+
+    async def subscribe(self):
+        async with self._lock:
+            if len(self._subscribers) >= MAX_SSE_SUBSCRIBERS:
+                return None
+            q: asyncio.Queue = asyncio.Queue(maxsize=200)
+            self._subscribers.append(q)
+            return q
+
+    async def unsubscribe(self, q: asyncio.Queue) -> None:
+        async with self._lock:
+            try:
+                self._subscribers.remove(q)
+            except ValueError:
+                pass
+
+    def broadcast(self, message: str) -> None:
+        """Non-blocking broadcast to all subscriber queues (drops if full)."""
+        for q in self._subscribers:
+            try:
+                q.put_nowait(message)
+            except asyncio.QueueFull:
+                pass
+
+
+broadcaster = _Broadcaster()
+
+
+def _classify_log_type(msg: str) -> str:
+    """Mirror the classification logic in stream-parser.js."""
+    if "[PROGRESS]" in msg or "已完成" in msg:
+        return "progress"
+    if "[SUCCESS]" in msg or "成功" in msg or "完成" in msg:
+        return "success"
+    if "[ERROR]" in msg or "ERROR" in msg or "失败" in msg or "错误" in msg:
+        return "error"
+    if "[WARNING]" in msg or "WARNING" in msg or "警告" in msg:
+        return "warning"
+    if "[START]" in msg or "开始处理" in msg or "开始分析" in msg:
+        return "start"
+    return "info"
+
+
+class GlobalBroadcastLogHandler(logging.Handler):
+    """Pushes every INFO+ log record to the global SSE broadcaster as JSON."""
+
+    def __init__(self, job_id: str, min_level: int = logging.INFO):
+        super().__init__()
+        self.job_id = job_id
+        self.min_level = min_level
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < self.min_level:
+            return
+        try:
+            raw = self.format(record)
+            msg_type = _classify_log_type(raw)
+            payload = json.dumps({
+                "job_id": self.job_id,
+                "type": msg_type,
+                "message": raw,
+                "timestamp": datetime.utcnow().isoformat() + "Z"
+            }, ensure_ascii=False)
+            broadcaster.broadcast(payload)
+        except Exception:
+            self.handleError(record)
 
 
 # Create FastAPI app
@@ -137,6 +219,44 @@ async def health_check():
     }
 
 
+@app.get("/api/v1/logs/live")
+async def live_logs():
+    """SSE stream of all API activity for the frontend monitor panel."""
+    q = await broadcaster.subscribe()
+    if q is None:
+        raise HTTPException(status_code=503, detail="Too many monitor connections (max 10)")
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        yield "data: " + json.dumps({
+            "job_id": "system",
+            "type": "info",
+            "message": "已连接到服务器日志流",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }, ensure_ascii=False) + "\n\n"
+
+        try:
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=20.0)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await broadcaster.unsubscribe(q)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive"
+        }
+    )
+
+
 @app.post("/api/v1/analyze")
 async def analyze_licenses(
     file: UploadFile = File(...),
@@ -158,51 +278,64 @@ async def analyze_licenses(
     """
     temp_input = None
     temp_output = None
-    
+    job_id = str(uuid.uuid4())[:8]
+    global_handler = GlobalBroadcastLogHandler(job_id=job_id)
+    global_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    _main_logger = logging.getLogger('__main__')
+    _core_logger = logging.getLogger('main')
+    _main_logger.addHandler(global_handler)
+    _core_logger.addHandler(global_handler)
+
     try:
+        broadcaster.broadcast(json.dumps({
+            "job_id": job_id, "type": "start",
+            "message": f"[START] 作业 {job_id}: 开始处理文件 {file.filename}",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }, ensure_ascii=False))
+
         # 验证邮箱格式
         if not email or "@" not in email:
             raise HTTPException(status_code=400, detail="无效的邮箱地址")
-        
+
         # 创建临时文件
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
             temp_input = tmp_input.name
             content = await file.read()
             tmp_input.write(content)
             tmp_input.flush()
-        
+
         logger.info(f"接收到文件: {file.filename}, 保存至: {temp_input}")
-        
+
         # 读取Excel文件
         try:
             df = pd.read_excel(temp_input)
             logger.info(f"读取了 {len(df)} 行数据")
         except Exception as e:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"无法读取Excel文件: {str(e)}"
             )
-        
+
         # 初始化API
         api = await get_github_api()
-        
+
         # 处理仓库
         logger.info("开始处理仓库...")
         results = await _process_repositories(api, df)
-        
+
         # 生成输出
         logger.info("生成输出文件...")
         output_df = _generate_output(results)
-        
+
         # 保存输出文件
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_output:
             temp_output = tmp_output.name
-        
+
         with pd.ExcelWriter(temp_output, engine='openpyxl') as writer:
             output_df.to_excel(writer, sheet_name='分析结果', index=False)
-        
+
         logger.info(f"输出文件已保存: {temp_output}")
-        
+
         # 发送邮件
         logger.info(f"发送结果到邮箱: {email}")
         email_config = None
@@ -211,13 +344,13 @@ async def analyze_licenses(
                 smtp_server=smtp_server,
                 smtp_port=smtp_port
             )
-        
+
         email_sent = send_analysis_result(
             recipient_email=email,
             output_file_path=temp_output,
             smtp_config=email_config
         )
-        
+
         # 返回结果
         return {
             "status": "success",
@@ -227,7 +360,7 @@ async def analyze_licenses(
             "email": email,
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -237,6 +370,13 @@ async def analyze_licenses(
             detail=f"处理失败: {str(e)}"
         )
     finally:
+        _main_logger.removeHandler(global_handler)
+        _core_logger.removeHandler(global_handler)
+        broadcaster.broadcast(json.dumps({
+            "job_id": job_id, "type": "success",
+            "message": f"[SUCCESS] 作业 {job_id}: 处理完成",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }, ensure_ascii=False))
         # 清理临时文件
         if temp_input and os.path.exists(temp_input):
             try:
@@ -244,7 +384,7 @@ async def analyze_licenses(
                 logger.debug(f"已删除临时输入文件: {temp_input}")
             except Exception as e:
                 logger.warning(f"删除临时输入文件失败: {e}")
-        
+
         if temp_output and os.path.exists(temp_output):
             try:
                 os.unlink(temp_output)
@@ -268,54 +408,67 @@ async def analyze_and_download(
     """
     temp_input = None
     temp_output = None
-    
+    job_id = str(uuid.uuid4())[:8]
+    global_handler = GlobalBroadcastLogHandler(job_id=job_id)
+    global_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    _main_logger = logging.getLogger('__main__')
+    _core_logger = logging.getLogger('main')
+    _main_logger.addHandler(global_handler)
+    _core_logger.addHandler(global_handler)
+
     try:
+        broadcaster.broadcast(json.dumps({
+            "job_id": job_id, "type": "start",
+            "message": f"[START] 作业 {job_id}: 开始处理文件 {file.filename}",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }, ensure_ascii=False))
+
         # 创建临时文件
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
             temp_input = tmp_input.name
             content = await file.read()
             tmp_input.write(content)
             tmp_input.flush()
-        
+
         logger.info(f"接收到文件: {file.filename}, 保存至: {temp_input}")
-        
+
         # 读取Excel文件
         try:
             df = pd.read_excel(temp_input)
             logger.info(f"读取了 {len(df)} 行数据")
         except Exception as e:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"无法读取Excel文件: {str(e)}"
             )
-        
+
         # 初始化API
         api = await get_github_api()
-        
+
         # 处理仓库
         logger.info("开始处理仓库...")
         results = await _process_repositories(api, df)
-        
+
         # 生成输出
         logger.info("生成输出文件...")
         output_df = _generate_output(results)
-        
+
         # 保存输出文件
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_output:
             temp_output = tmp_output.name
-        
+
         with pd.ExcelWriter(temp_output, engine='openpyxl') as writer:
             output_df.to_excel(writer, sheet_name='分析结果', index=False)
-        
+
         logger.info(f"输出文件已保存: {temp_output}")
-        
+
         # 返回文件
         return FileResponse(
             path=temp_output,
             filename=f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -325,6 +478,13 @@ async def analyze_and_download(
             detail=f"处理失败: {str(e)}"
         )
     finally:
+        _main_logger.removeHandler(global_handler)
+        _core_logger.removeHandler(global_handler)
+        broadcaster.broadcast(json.dumps({
+            "job_id": job_id, "type": "success",
+            "message": f"[SUCCESS] 作业 {job_id}: 处理完成",
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }, ensure_ascii=False))
         # 注意：FileResponse会自动清理文件，所以这里只清理输入文件
         if temp_input and os.path.exists(temp_input):
             try:
@@ -349,18 +509,19 @@ async def analyze_with_stream(
     """
     async def log_generator() -> AsyncGenerator[str, None]:
         temp_input = None
-        
+        job_id = str(uuid.uuid4())[:8]
+
         try:
             # 创建日志队列（容纳更多日志消息）
             log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-            
+
             # 创建临时文件
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
                 temp_input = tmp_input.name
                 content = await file.read()
                 tmp_input.write(content)
                 tmp_input.flush()
-            
+
             # 添加流式日志处理器
             stream_handler = AsyncStreamingLogHandler(
                 log_queue=log_queue,
@@ -369,18 +530,29 @@ async def analyze_with_stream(
             stream_handler.setFormatter(
                 logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             )
-            
+            global_handler = GlobalBroadcastLogHandler(job_id=job_id)
+            global_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            )
+
             # 为所有相关日志记录器添加处理器
             main_logger = logging.getLogger('__main__')
             main_logger.addHandler(stream_handler)
-            
+            main_logger.addHandler(global_handler)
+
             # 也添加到实际使用的日志记录器
             core_logger = logging.getLogger('main')
             core_logger.addHandler(stream_handler)
-            
+            core_logger.addHandler(global_handler)
+
             try:
+                broadcaster.broadcast(json.dumps({
+                    "job_id": job_id, "type": "start",
+                    "message": f"[START] 作业 {job_id}: 开始处理文件 {file.filename}",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }, ensure_ascii=False))
                 yield f"[START] 开始处理文件: {file.filename}\n"
-                
+
                 # 读取Excel文件
                 try:
                     df = pd.read_excel(temp_input)
@@ -388,19 +560,19 @@ async def analyze_with_stream(
                 except Exception as e:
                     yield f"[ERROR] 无法读取Excel文件: {str(e)}\n"
                     return
-                
+
                 # 初始化API
                 api = await get_github_api()
                 yield "[INFO] GitHub API 客户端已初始化\n"
-                
+
                 # 处理仓库（带流式日志）
                 yield "[INFO] 开始处理仓库...\n"
-                
+
                 # 创建一个任务来处理仓库
                 process_task = asyncio.create_task(
                     _process_repositories(api, df, log_queue)
                 )
-                
+
                 # 实时读取日志队列
                 while not process_task.done():
                     try:
@@ -414,10 +586,10 @@ async def analyze_with_stream(
                     except Exception as e:
                         yield f"[ERROR] 日志处理错误: {str(e)}\n"
                         break
-                
+
                 # 等待任务完成
                 results = await process_task
-                
+
                 # 输出所有剩余的队列消息
                 while True:
                     try:
@@ -425,13 +597,20 @@ async def analyze_with_stream(
                         yield f"{log_msg}\n"
                     except asyncio.QueueEmpty:
                         break
-                
+
+                broadcaster.broadcast(json.dumps({
+                    "job_id": job_id, "type": "success",
+                    "message": f"[SUCCESS] 作业 {job_id}: 处理完成，共处理 {len(results)} 行数据",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }, ensure_ascii=False))
                 yield f"[SUCCESS] 处理完成，共处理 {len(results)} 行数据\n"
-                
+
             finally:
                 # 移除处理器
                 main_logger.removeHandler(stream_handler)
-            
+                main_logger.removeHandler(global_handler)
+                core_logger.removeHandler(global_handler)
+
         except Exception as e:
             yield f"[ERROR] 处理请求时出错: {str(e)}\n"
         finally:
@@ -441,7 +620,7 @@ async def analyze_with_stream(
                     os.unlink(temp_input)
                 except Exception:
                     pass
-    
+
     return StreamingResponse(
         log_generator(),
         media_type="text/plain; charset=utf-8"
@@ -470,23 +649,24 @@ async def analyze_with_stream_and_email(
     async def log_generator() -> AsyncGenerator[str, None]:
         temp_input = None
         temp_output = None
-        
+        job_id = str(uuid.uuid4())[:8]
+
         try:
             # 验证邮箱格式
             if not email or "@" not in email:
                 yield "[ERROR] 无效的邮箱地址\n"
                 return
-            
+
             # 创建日志队列（容纳更多日志消息）
             log_queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-            
+
             # 创建临时文件
             with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_input:
                 temp_input = tmp_input.name
                 content = await file.read()
                 tmp_input.write(content)
                 tmp_input.flush()
-            
+
             # 添加流式日志处理器
             stream_handler = AsyncStreamingLogHandler(
                 log_queue=log_queue,
@@ -495,18 +675,29 @@ async def analyze_with_stream_and_email(
             stream_handler.setFormatter(
                 logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             )
-            
+            global_handler = GlobalBroadcastLogHandler(job_id=job_id)
+            global_handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            )
+
             # 为所有相关日志记录器添加处理器
             main_logger = logging.getLogger('__main__')
             main_logger.addHandler(stream_handler)
-            
+            main_logger.addHandler(global_handler)
+
             # 也添加到实际使用的日志记录器
             core_logger = logging.getLogger('main')
             core_logger.addHandler(stream_handler)
-            
+            core_logger.addHandler(global_handler)
+
             try:
+                broadcaster.broadcast(json.dumps({
+                    "job_id": job_id, "type": "start",
+                    "message": f"[START] 作业 {job_id}: 开始处理文件 {file.filename}",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }, ensure_ascii=False))
                 yield f"[START] 开始处理文件: {file.filename}\n"
-                
+
                 # 读取Excel文件
                 try:
                     df = pd.read_excel(temp_input)
@@ -514,19 +705,19 @@ async def analyze_with_stream_and_email(
                 except Exception as e:
                     yield f"[ERROR] 无法读取Excel文件: {str(e)}\n"
                     return
-                
+
                 # 初始化API
                 api = await get_github_api()
                 yield "[INFO] GitHub API 客户端已初始化\n"
-                
+
                 # 处理仓库（带流式日志）
                 yield "[INFO] 开始处理仓库...\n"
-                
+
                 # 创建一个任务来处理仓库
                 process_task = asyncio.create_task(
                     _process_repositories(api, df, log_queue)
                 )
-                
+
                 # 实时读取日志队列
                 while not process_task.done():
                     try:
@@ -538,10 +729,10 @@ async def analyze_with_stream_and_email(
                     except Exception as e:
                         yield f"[ERROR] 日志处理错误: {str(e)}\n"
                         break
-                
+
                 # 等待任务完成
                 results = await process_task
-                
+
                 # 输出所有剩余的队列消息
                 while True:
                     try:
@@ -549,22 +740,22 @@ async def analyze_with_stream_and_email(
                         yield f"{log_msg}\n"
                     except asyncio.QueueEmpty:
                         break
-                
+
                 yield f"[INFO] 处理完成，共处理 {len(results)} 行数据\n"
-                
+
                 # 生成输出
                 yield "[INFO] 生成输出文件...\n"
                 output_df = _generate_output(results)
-                
+
                 # 保存输出文件
                 with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp_output:
                     temp_output = tmp_output.name
-                
+
                 with pd.ExcelWriter(temp_output, engine='openpyxl') as writer:
                     output_df.to_excel(writer, sheet_name='分析结果', index=False)
-                
+
                 yield "[INFO] 输出文件已生成\n"
-                
+
                 # 发送邮件
                 yield f"[INFO] 正在发送结果到邮箱: {email}\n"
                 email_config = None
@@ -573,22 +764,29 @@ async def analyze_with_stream_and_email(
                         smtp_server=smtp_server,
                         smtp_port=smtp_port
                     )
-                
+
                 email_sent = send_analysis_result(
                     recipient_email=email,
                     output_file_path=temp_output,
                     smtp_config=email_config
                 )
-                
+
                 if email_sent:
+                    broadcaster.broadcast(json.dumps({
+                        "job_id": job_id, "type": "success",
+                        "message": f"[SUCCESS] 作业 {job_id}: 邮件已发送到 {email}",
+                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                    }, ensure_ascii=False))
                     yield f"[SUCCESS] 邮件已发送到: {email}\n"
                 else:
                     yield f"[ERROR] 邮件发送失败，请检查配置\n"
-                
+
             finally:
                 # 移除处理器
                 main_logger.removeHandler(stream_handler)
-            
+                main_logger.removeHandler(global_handler)
+                core_logger.removeHandler(global_handler)
+
         except Exception as e:
             yield f"[ERROR] 处理请求时出错: {str(e)}\n"
         finally:
@@ -730,12 +928,14 @@ async def _process_repositories(api, df, log_queue=None):
     
     async def log_progress():
         """输出处理进度"""
+        progress_pct = (completed_count / total_count * 100) if total_count > 0 else 0
+        msg = f"[PROGRESS] 已完成 {completed_count}/{total_count} ({progress_pct:.1f}%)"
         if log_queue:
             try:
-                progress_pct = (completed_count / total_count * 100) if total_count > 0 else 0
-                log_queue.put_nowait(f"[PROGRESS] 已完成 {completed_count}/{total_count} ({progress_pct:.1f}%)")
+                log_queue.put_nowait(msg)
             except:
                 pass
+        logger.info(msg)
     
     async def process_single(row, index):
         nonlocal completed_count

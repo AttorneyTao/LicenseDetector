@@ -296,5 +296,79 @@ const Components = {
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    },
+
+    // ===== Monitor Panel =====
+
+    setMonitorStatus(status) {
+        const dot = document.getElementById('monitorStatusDot');
+        const text = document.getElementById('monitorStatusText');
+        dot.className = 'monitor-status-dot ' + status;
+        const labels = { ok: '已连接', error: '连接断开', connecting: '连接中...' };
+        text.textContent = labels[status] || '未知';
+    },
+
+    renderMonitorJobs(jobs) {
+        const container = document.getElementById('monitorJobs');
+        const entries = Object.entries(jobs);
+        if (entries.length === 0) {
+            container.innerHTML = '<span class="monitor-no-jobs">暂无活动作业</span>';
+            return;
+        }
+        container.innerHTML = entries.map(([jobId, job]) => {
+            const p = job.lastProgress;
+            const progressText = p ? `${p.current}/${p.total} (${p.percent}%)` : '处理中...';
+            const statusClass = job.status === 'done' ? 'success'
+                : job.status === 'error' ? 'error' : 'running';
+            return `<div class="monitor-job-chip ${statusClass}">` +
+                `<span class="monitor-job-id">${this._escapeHtml(jobId)}</span>` +
+                `<span class="monitor-job-progress">${this._escapeHtml(progressText)}</span>` +
+                `</div>`;
+        }).join('');
+    },
+
+    appendMonitorLine(parsed, jobId, timestamp) {
+        const viewer = document.getElementById('monitorLogViewer');
+        const div = document.createElement('div');
+        div.className = 'log-line ' + StreamParser.getLogClass(parsed.type);
+        div.dataset.type = parsed.type;
+        div.dataset.jobId = jobId || '';
+
+        const time = timestamp ? new Date(timestamp).toLocaleTimeString('zh-CN', {
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
+        }) : '';
+        div.textContent = `[${time}][${jobId}] ${parsed.message}`;
+
+        if (viewer.children.length >= 2000) {
+            viewer.removeChild(viewer.firstChild);
+        }
+        viewer.appendChild(div);
+
+        const isNearBottom = viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 60;
+        if (isNearBottom) viewer.scrollTop = viewer.scrollHeight;
+    },
+
+    filterMonitorLogs(filterType) {
+        const viewer = document.getElementById('monitorLogViewer');
+        viewer.querySelectorAll('.log-line').forEach(line => {
+            if (filterType === 'all') {
+                line.classList.remove('filtered');
+            } else {
+                line.classList.toggle('filtered', line.dataset.type !== filterType);
+            }
+        });
+    },
+
+    searchMonitorLogs(query) {
+        const viewer = document.getElementById('monitorLogViewer');
+        viewer.querySelectorAll('.log-line').forEach(line => {
+            if (!query) {
+                line.style.display = '';
+                return;
+            }
+            const matches = line.textContent.toLowerCase().includes(query.toLowerCase())
+                || (line.dataset.jobId || '').includes(query);
+            line.style.display = matches ? '' : 'none';
+        });
     }
 };

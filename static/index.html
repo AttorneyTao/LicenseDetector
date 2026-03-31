@@ -149,6 +149,42 @@
             </div>
         </section>
 
+        <!-- Server Monitor Panel -->
+        <section class="card monitor-card" id="monitorCard">
+            <div class="card-header monitor-header">
+                <div class="monitor-title-row">
+                    <h2 class="card-title" style="margin-bottom:0">服务器监控</h2>
+                    <span class="monitor-status-dot" id="monitorStatusDot"></span>
+                    <span class="monitor-status-text" id="monitorStatusText">连接中...</span>
+                </div>
+                <div class="monitor-controls">
+                    <button class="btn-text" id="clearMonitorBtn">清除</button>
+                    <button class="btn-icon" id="monitorCollapseBtn" title="折叠/展开">
+                        <svg id="monitorCollapseIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="18 15 12 9 6 15"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div id="monitorBody">
+                <div class="monitor-jobs" id="monitorJobs">
+                    <span class="monitor-no-jobs">暂无活动作业</span>
+                </div>
+                <div class="log-toolbar" style="margin-top:8px">
+                    <div class="log-filters">
+                        <button class="filter-btn active" data-monitor-filter="all">全部</button>
+                        <button class="filter-btn" data-monitor-filter="info">INFO</button>
+                        <button class="filter-btn" data-monitor-filter="error">ERROR</button>
+                        <button class="filter-btn" data-monitor-filter="progress">PROGRESS</button>
+                    </div>
+                    <div class="log-actions">
+                        <input type="text" class="log-search" id="monitorSearch" placeholder="按作业ID或关键字过滤...">
+                    </div>
+                </div>
+                <div class="log-viewer monitor-log-viewer" id="monitorLogViewer"></div>
+            </div>
+        </section>
+
         <!-- History Panel -->
         <section class="card history-card">
             <div class="card-header">

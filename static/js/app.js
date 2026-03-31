@@ -19,6 +19,13 @@
         abortController: null
     };
 
+    // ===== Monitor State =====
+    const monitorState = {
+        collapsed: false,
+        activeJobs: {},   // job_id -> { startTime, lastProgress, status }
+        es: null
+    };
+
     // ===== Initialization =====
     document.addEventListener('DOMContentLoaded', () => {
         initTheme();
@@ -30,6 +37,7 @@
         initHistory();
         initBeforeUnload();
         loadSheetJS();
+        initMonitor();
     });
 
     // ===== Theme =====
@@ -224,6 +232,94 @@
         script.async = true;
         script.onerror = () => { /* graceful degradation */ };
         document.head.appendChild(script);
+    }
+
+    // ===== Monitor =====
+    function initMonitor() {
+        // Collapse toggle
+        document.getElementById('monitorCollapseBtn').addEventListener('click', () => {
+            monitorState.collapsed = !monitorState.collapsed;
+            document.getElementById('monitorBody').style.display =
+                monitorState.collapsed ? 'none' : '';
+            const icon = document.getElementById('monitorCollapseIcon');
+            icon.setAttribute('points',
+                monitorState.collapsed ? '6 9 12 15 18 9' : '18 15 12 9 6 15');
+        });
+
+        // Clear button
+        document.getElementById('clearMonitorBtn').addEventListener('click', () => {
+            document.getElementById('monitorLogViewer').innerHTML = '';
+            Components.showToast('监控日志已清除', 'info');
+        });
+
+        // Filter buttons
+        document.querySelectorAll('[data-monitor-filter]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('[data-monitor-filter]')
+                    .forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                Components.filterMonitorLogs(btn.dataset.monitorFilter);
+            });
+        });
+
+        // Search
+        let monitorSearchTimeout;
+        document.getElementById('monitorSearch').addEventListener('input', (e) => {
+            clearTimeout(monitorSearchTimeout);
+            monitorSearchTimeout = setTimeout(() => {
+                Components.searchMonitorLogs(e.target.value.trim());
+            }, 200);
+        });
+
+        // Connect SSE
+        connectMonitor();
+
+        // Reconnect when tab becomes visible again
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && monitorState.es &&
+                monitorState.es.readyState === EventSource.CLOSED) {
+                connectMonitor();
+            }
+        });
+    }
+
+    function connectMonitor() {
+        if (monitorState.es) monitorState.es.close();
+        Components.setMonitorStatus('connecting');
+        monitorState.es = ApiClient.subscribeLiveLogs(
+            (data) => {
+                Components.setMonitorStatus('ok');
+                handleMonitorMessage(data);
+            },
+            () => Components.setMonitorStatus('error')
+        );
+    }
+
+    function handleMonitorMessage(data) {
+        const { job_id, type, message, timestamp } = data;
+
+        // Track active jobs
+        if (!monitorState.activeJobs[job_id] && job_id !== 'system') {
+            monitorState.activeJobs[job_id] = { startTime: timestamp, lastProgress: null, status: 'running' };
+        }
+        if (type === 'success' && monitorState.activeJobs[job_id]) {
+            monitorState.activeJobs[job_id].status = 'done';
+        }
+        if (type === 'error' && monitorState.activeJobs[job_id]) {
+            monitorState.activeJobs[job_id].status = 'error';
+        }
+
+        const progress = StreamParser.extractProgress(message);
+        if (progress && monitorState.activeJobs[job_id]) {
+            monitorState.activeJobs[job_id].lastProgress = progress;
+        }
+
+        Components.renderMonitorJobs(monitorState.activeJobs);
+
+        const parsed = StreamParser.parseLogLine(message);
+        if (parsed) {
+            Components.appendMonitorLine(parsed, job_id, timestamp);
+        }
     }
 
     // ===== Analysis Flow =====
