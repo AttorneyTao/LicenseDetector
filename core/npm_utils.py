@@ -15,6 +15,7 @@ from .utils import (
     extract_copyright_info_async,
     analyze_license_content_async,
     find_top_level_thirdparty_dirs_local,
+    construct_copyright_notice_async,
 )
 from bs4 import BeautifulSoup
 import tempfile
@@ -592,7 +593,11 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
             license_type = None
             readme_license = None
 
-    last_modified_iso = version_obj.get("time") or version_obj.get("date")
+    # npm packument 的 time 字典在根层级（以版本号为键），版本子对象本身不含 time 字段
+    if "versions" in packument:
+        last_modified_iso = packument.get("time", {}).get(resolved_version)
+    else:
+        last_modified_iso = None  # 单版本端点不包含发布时间
     logger.debug("Last modified ISO: %s", last_modified_iso)
     if last_modified_iso:
         try:
@@ -613,23 +618,6 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         author = author_obj
     else:
         author = ""
-
-    # Prefer async copyright extraction since we're in async context
-    try:
-        copyright_notice = await extract_copyright_info_async(readme_content or "")
-    except Exception:
-        # Fallback to sync version if async extraction fails for any reason
-        copyright_notice = extract_copyright_info(readme_content or "")
-    logger.debug("Copyright notice: %s", copyright_notice)
-
-    if not copyright_notice:
-        if not author:
-            author = f"{pkg_name} original author and authors"
-
-        logger.debug("Author: %s", author)
-
-        copyright_notice = f"Copyright(c) {dt.year} {author}".strip()
-        logger.debug("Fallback copyright notice: %s", copyright_notice)
 
     license_files = f"https://www.npmjs.com/package/{pkg_name}/v/{resolved_version}?activeTab=code"
     logger.debug("License files URL: %s", license_files)
@@ -705,8 +693,9 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
             github_scan_success = False
             logger.error("Failed to call process_github_repository: %s", e, exc_info=True)
 
-    # 没有 github 仓库，或 github 扫描失败时，分析 npm 包 tarball 中的 thirdparty 目录
+    # 没有 github 仓库，或 github 扫描失败时，分析 npm 包 tarball 中的 thirdparty 目录和 License 文件
     thirdparty_dirs: List[str] = []
+    npm_license_content: Optional[str] = None
     should_fallback_to_npm_tarball = (not repo_url or "github.com" not in repo_url) or (
         repo_url and "github.com" in repo_url and not github_scan_success
     )
@@ -715,8 +704,12 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         tarball_url = version_obj.get("dist", {}).get("tarball")
         if tarball_url:
             try:
-                thirdparty_dirs = await async_analyze_npm_tarball_thirdparty_dirs(tarball_url)
+                thirdparty_dirs, npm_license_content = await async_analyze_npm_tarball(tarball_url)
                 logger.info("Found thirdparty dirs in npm tarball: %s", thirdparty_dirs)
+                logger.info(
+                    "Extracted npm license content (length=%d)",
+                    len(npm_license_content) if npm_license_content else 0,
+                )
 
                 if license_analysis is None:
                     license_analysis = {}
@@ -728,22 +721,28 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
                 else:
                     license_analysis = {"thirdparty_dirs": thirdparty_dirs}
             except Exception as e:
-                logger.warning("Failed to analyze npm tarball for thirdparty dirs: %s", e)
+                logger.warning("Failed to analyze npm tarball: %s", e)
         else:
             logger.info("No tarball URL found for npm fallback analysis")
     else:
         logger.info("GitHub scan succeeded; npm tarball fallback not needed")
 
     # 处理 copyright_notice 逻辑
-    final_copyright_notice = copyright_notice
-    if github_copyright_notice:
-        if "original author and authors" in github_copyright_notice:
-            logger.info(
-                "GitHub copyright_notice contains 'original author and authors', keep npm copyright_notice"
-            )
-        else:
-            final_copyright_notice = github_copyright_notice
-            logger.info("Replaced copyright_notice with GitHub result")
+    if github_scan_success and github_copyright_notice and "original author and authors" not in github_copyright_notice:
+        final_copyright_notice = github_copyright_notice
+        logger.info("Using GitHub copyright_notice: %s", final_copyright_notice)
+    else:
+        # 使用 LLM 从 README 和 npm tarball 中的 License 文件提取版权声明
+        final_copyright_notice = await construct_copyright_notice_async(
+            year=str(dt.year),
+            owner="",
+            repo=pkg_name,
+            ref=resolved_version,
+            component_name=pkg_name,
+            readme_content=readme_content,
+            license_content=npm_license_content,
+        )
+        logger.debug("Copyright notice computed from npm data: %s", final_copyright_notice)
 
     final_license_analysis = (
         github_fields["license_analysis"]
@@ -817,9 +816,10 @@ async def async_download_and_extract_npm_tarball(tarball_url: str) -> str:
     return tmp_dir
 
 
-async def async_analyze_npm_tarball_thirdparty_dirs(tarball_url: str) -> List[str]:
+async def async_analyze_npm_tarball(tarball_url: str) -> Tuple[List[str], Optional[str]]:
     """
-    异步下载并分析 npm tarball 中的第三方目录，分析后自动清理临时文件。
+    异步下载并分析 npm tarball，返回 (thirdparty_dirs, license_content)。
+    license_content 为找到的第一个 License 文件的文本内容，未找到时为 None。
     """
     tmp_dir = None
     try:
@@ -827,8 +827,31 @@ async def async_analyze_npm_tarball_thirdparty_dirs(tarball_url: str) -> List[st
         package_root = os.path.join(tmp_dir, "package")
         if not os.path.isdir(package_root):
             package_root = tmp_dir
+
         thirdparty_dirs = find_top_level_thirdparty_dirs_local(package_root)
-        return thirdparty_dirs
+
+        license_content: Optional[str] = None
+        license_keywords = ("license", "licence", "copying")
+        try:
+            for filename in os.listdir(package_root):
+                if any(kw in filename.lower() for kw in license_keywords):
+                    filepath = os.path.join(package_root, filename)
+                    if os.path.isfile(filepath):
+                        async with aiofiles.open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                            license_content = await f.read()
+                        if license_content:
+                            npm_logger.debug("Found license file in tarball: %s", filename)
+                            break
+        except Exception as e:
+            npm_logger.warning("Failed to extract license content from tarball: %s", e)
+
+        return thirdparty_dirs, license_content
     finally:
         if tmp_dir and os.path.isdir(tmp_dir):
             shutil.rmtree(tmp_dir)
+
+
+async def async_analyze_npm_tarball_thirdparty_dirs(tarball_url: str) -> List[str]:
+    """向后兼容包装，只返回 thirdparty_dirs。"""
+    thirdparty_dirs, _ = await async_analyze_npm_tarball(tarball_url)
+    return thirdparty_dirs
