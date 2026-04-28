@@ -408,7 +408,7 @@ def find_license_files_detailed(path_map: Dict[str, Any], sub_path: str, keyword
             continue
 
         if base_path:
-            if not path.startswith(base_path):
+            if not (path == base_path or path.startswith(base_path + "/")):
                 continue
         else:
             # Root-level search: only include files at root or in allowed top-level dirs

@@ -827,7 +827,13 @@ def parse_github_url(url: str) -> Tuple[str, str, Kind]:
         logger.debug(f"URL is a repository: {repo_url}")
         return repo_url, "", Kind.REPO
 
-    sub_path = "/".join(path_parts[2:])
+    # Strip GitHub URL navigation segments: tree/{ref}/path or blob/{ref}/path
+    # path_parts[2] is 'tree'/'blob', path_parts[3] is the branch/tag ref
+    if len(path_parts) > 4 and path_parts[2] in ('tree', 'blob'):
+        sub_path = "/".join(path_parts[4:])
+    else:
+        sub_path = "/".join(path_parts[2:])
+
     if "." in path_parts[-1]:
         logger.debug(f"URL is a file: {repo_url}/{sub_path}")
         return repo_url, sub_path, Kind.FILE
@@ -1192,8 +1198,9 @@ async def process_github_repository(
                         # 如果解码失败，继续使用原始内容
                     license_url = license_info.get("_links", {}).get("html") or license_info.get("download_url", "")
                     license_file_analysis = await analyze_license_content_async(license_content, license_url)
-                    # 如果LLM分析成功，直接返回结果
-                    if license_file_analysis and license_file_analysis.get("licenses"):
+                    # For root-level URLs, return early; for subdir URLs, save result
+                    # and continue so the subdir-specific license takes priority
+                    if license_file_analysis and license_file_analysis.get("licenses") and not sub_path:
                         determination_reason = f"License determined via GitHub API and LLM analysis"
                         copyright_notice = await construct_copyright_notice_async(
                             await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
