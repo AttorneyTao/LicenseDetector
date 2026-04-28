@@ -1,8 +1,13 @@
 import re
 import logging
 import os
-from typing import Optional
+import shutil
+import tarfile
+import tempfile
+from datetime import datetime
+from typing import Optional, Tuple
 import aiohttp
+import aiofiles
 
 log_dir = "./logs"
 os.makedirs(log_dir, exist_ok=True)
@@ -195,4 +200,159 @@ async def get_github_url_from_pubdev(
         "license_in_pubspec": license_in_pubspec,
         "pubspec": pubspec,
         "raw_info": raw,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Archive-based fallback (used when GitHub has no matching version tag)
+# ---------------------------------------------------------------------------
+
+async def _download_and_extract_pubdev_archive(archive_url: str) -> str:
+    """
+    Download a pub.dev .tar.gz archive and extract it to a temp directory.
+    Returns the path to the temp directory (caller must clean up).
+    """
+    tmp_dir = tempfile.mkdtemp(prefix="pubdev_")
+    archive_path = os.path.join(tmp_dir, "package.tar.gz")
+
+    logger.info(f"Downloading pub.dev archive: {archive_url}")
+    async with aiohttp.ClientSession() as session:
+        async with session.get(archive_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            resp.raise_for_status()
+            async with aiofiles.open(archive_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(8192):
+                    await f.write(chunk)
+
+    logger.info(f"Extracting archive to {tmp_dir}")
+    with tarfile.open(archive_path, "r:gz") as tar:
+        tar.extractall(path=tmp_dir)
+
+    return tmp_dir
+
+
+async def _find_license_in_archive(extract_dir: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Search for a LICENSE file in the root of the extracted pub.dev archive.
+    pub.dev packages use a flat layout (no 'package/' subfolder like npm).
+
+    Returns (license_content, license_filename) or (None, None).
+    """
+    license_keywords = ("license", "licence", "copying", "notice")
+    try:
+        for filename in os.listdir(extract_dir):
+            if any(kw in filename.lower() for kw in license_keywords):
+                filepath = os.path.join(extract_dir, filename)
+                if os.path.isfile(filepath):
+                    async with aiofiles.open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = await f.read()
+                    if content:
+                        logger.info(f"Found license file in archive: {filename}")
+                        return content, filename
+    except Exception as e:
+        logger.warning(f"Error scanning archive for license files: {e}")
+    return None, None
+
+
+async def process_pubdev_package(
+    url: str,
+    version: Optional[str] = None,
+    name: Optional[str] = None,
+    pubdev_info: Optional[dict] = None,
+) -> dict:
+    """
+    Fallback processor: download the pub.dev package archive for the resolved
+    version, extract the LICENSE file, and use LLM to determine license type
+    and copyright notice.
+
+    pubdev_info may be passed in from a prior get_github_url_from_pubdev call
+    to avoid re-fetching the API metadata.
+    """
+    from .utils import analyze_license_content_async, construct_copyright_notice_async
+
+    # Re-use already-fetched metadata if available
+    if pubdev_info is None:
+        pubdev_info = await get_github_url_from_pubdev(url, version, name)
+
+    pkg_name = name or pubdev_info.get("pubspec", {}).get("name", "unknown")
+    resolved_version = pubdev_info.get("resolved_version") or version or "unknown"
+    raw_info = pubdev_info.get("raw_info", {})
+
+    # Construct archive URL: prefer API-provided one, fall back to canonical pattern
+    archive_url = (
+        raw_info.get("archive_url")
+        or f"https://pub.dev/packages/{pkg_name}/versions/{resolved_version}.tar.gz"
+    )
+    source_url = f"https://pub.dev/packages/{pkg_name}/versions/{resolved_version}"
+
+    logger.info(f"pub.dev archive fallback for {pkg_name}@{resolved_version}: {archive_url}")
+
+    license_content: Optional[str] = None
+    license_filename: Optional[str] = None
+    tmp_dir: Optional[str] = None
+    try:
+        tmp_dir = await _download_and_extract_pubdev_archive(archive_url)
+        license_content, license_filename = await _find_license_in_archive(tmp_dir)
+    except Exception as e:
+        logger.warning(f"Failed to download/extract pub.dev archive: {e}")
+    finally:
+        if tmp_dir and os.path.isdir(tmp_dir):
+            shutil.rmtree(tmp_dir)
+
+    # LLM license analysis
+    license_analysis = None
+    license_type = pubdev_info.get("license_in_pubspec")
+
+    if license_content:
+        license_analysis = await analyze_license_content_async(license_content, source_url)
+        if license_analysis and license_analysis.get("licenses"):
+            license_type = (
+                license_analysis.get("spdx_expression")
+                or license_analysis["licenses"][0]
+            )
+    elif license_type:
+        # pubspec declared a license but no file found — trust the declaration
+        license_analysis = {"licenses": [license_type], "spdx_expression": license_type,
+                            "confidence": 0.7, "source": "pubspec_declaration"}
+
+    # Copyright notice via LLM
+    year = str(datetime.now().year)
+    copyright_notice = await construct_copyright_notice_async(
+        year=year,
+        owner="",
+        repo=pkg_name,
+        ref=resolved_version,
+        component_name=pkg_name,
+        readme_content=None,
+        license_content=license_content,
+    )
+
+    logger.info(
+        f"pub.dev fallback result: pkg={pkg_name} version={resolved_version} "
+        f"license={license_type} copyright={copyright_notice}"
+    )
+
+    return {
+        "input_url": url,
+        "repo_url": pubdev_info.get("github_url") or source_url,
+        "input_version": version,
+        "resolved_version": resolved_version,
+        "used_default_branch": pubdev_info.get("used_default", False),
+        "component_name": pkg_name,
+        "license_files": source_url,
+        "license_analysis": license_analysis,
+        "license_type": license_type,
+        "has_license_conflict": False,
+        "readme_license": None,
+        "license_file_license": license_type,
+        "copyright_notice": copyright_notice,
+        "status": "success" if license_type else "no_license_found",
+        "license_determination_reason": (
+            f"pub.dev archive fallback: license extracted from {license_filename}"
+            if license_filename
+            else (
+                "pub.dev archive fallback: license from pubspec declaration"
+                if pubdev_info.get("license_in_pubspec")
+                else "pub.dev archive fallback: no license found"
+            )
+        ),
     }

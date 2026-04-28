@@ -26,7 +26,7 @@ from core.utils import get_concluded_license, extract_thirdparty_dirs_column
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo
-from core.pubdev_utils import get_github_url_from_pubdev
+from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.maven_utils import analyze_maven_repository_url
 
 import pandas as pd
@@ -961,10 +961,24 @@ async def _process_repositories(api, df, log_queue=None):
                             pass
                     pubdev_info = await get_github_url_from_pubdev(url, version, name)
                     github_url = pubdev_info.get("github_url")
+                    github_success = False
                     if github_url:
                         result = await process_github_repository(api, github_url, version, name=name)
-                    else:
-                        result = await process_github_repository(api, url, version, name=name)
+                        # Consider GitHub scan successful only when the specific version was found
+                        github_success = (
+                            result.get("status") == "success"
+                            and not result.get("used_default_branch", True)
+                        )
+                    # Fall back to pub.dev archive when GitHub had no matching version tag
+                    # or when no GitHub URL was found at all
+                    if not github_success:
+                        logger.info(f"GitHub 未找到匹配版本，回退至 pub.dev 压缩包分析: {url}")
+                        if log_queue:
+                            try:
+                                log_queue.put_nowait(f"[INFO] 回退至 pub.dev 压缩包分析: {url}")
+                            except:
+                                pass
+                        result = await process_pubdev_package(url, version, name, pubdev_info)
 
                 # Check if it's a Go package
                 elif isinstance(url, str) and (
