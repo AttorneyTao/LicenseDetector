@@ -618,7 +618,7 @@ async def select_primary_license_file(license_files_detailed: List[Dict[str, str
     return license_files_detailed[0]
 
 
-async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str]) -> Tuple[str, bool]:
+async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str], name: Optional[str] = None) -> Tuple[str, bool]:
     """
     First try text matching, fallback to Gemini LLM if no match.
     Supports "0.x" style ranges, "v" prefix, and case-insensitive matching.
@@ -729,7 +729,8 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
             prompt = PROMPTS["version_resolve"].format(
                 candidate_versions=candidate_versions,
                 version=version_str,
-                default_branch=default_branch
+                default_branch=default_branch,
+                name=name or ""
             )
 
             llm_logger.info("Version Resolve Request:")
@@ -1150,7 +1151,7 @@ async def process_github_repository(
         # Step 4: Resolve version
         substep_logger.info("Step 4/15: Resolving version")
         substep_logger.info(f"Resolving version for {owner}/{repo}, requested version: {version}")
-        resolved_version, used_default_branch = await resolve_github_version(api, owner, repo, version)
+        resolved_version, used_default_branch = await resolve_github_version(api, owner, repo, version, name)
         substep_logger.info(f"Resolved version: {resolved_version} (used_default_branch: {used_default_branch})")
 
         # Step 5: Try to get license directly from GitHub API

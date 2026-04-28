@@ -48,6 +48,9 @@ version_resolve: |
   {candidate_versions}
 
   The user requested version string: {version}
+  Component name (may be empty): {name}
+
+  Note: some repositories are monorepos where tags encode both a component name and a version (e.g. "timing-v1.0.2" for component "timing" at version "1.0.2"). When a component name is provided, prefer tags that match both the component name and the version string.
 
   Please determine the most appropriate branch or tag name the user wants. Only return one value, and it must be strictly from the above list. Do not return SHA, explanations, or anything else.
   If you cannot determine or there is no suitable match, return "{default_branch}".
