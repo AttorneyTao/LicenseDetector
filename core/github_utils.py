@@ -1289,6 +1289,22 @@ async def process_github_repository(
         license_files_detailed = find_license_files_detailed(path_map, sub_path, license_keywords)
         substep_logger.info(f"Found {len(license_files_detailed)} license files in subpath")
 
+        # Step 9.5: For root-level URLs with a known name, also search any subdir
+        # at any depth whose last path segment matches the name (e.g. pkgs/timing for name=timing)
+        if not sub_path and name:
+            name_lower = name.lower()
+            matching_dirs = [
+                item["path"] for item in tree
+                if item.get("type") == "tree"
+                and item["path"].split("/")[-1].lower() == name_lower
+            ]
+            for dir_path in matching_dirs:
+                substep_logger.info(f"Step 9.5: Searching name-matching subdir: {dir_path}")
+                subdir_files = find_license_files_detailed(path_map, dir_path, license_keywords)
+                license_files_detailed.extend(subdir_files)
+            if matching_dirs:
+                substep_logger.info(f"After name-matching subdir search: {len(license_files_detailed)} license files total")
+
         # Step 10: Get license content for copyright analysis with intelligent selection
         substep_logger.info("Step 10/15: Getting license content for copyright analysis")
         license_content = None
