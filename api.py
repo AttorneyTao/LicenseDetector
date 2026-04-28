@@ -26,6 +26,7 @@ from core.utils import get_concluded_license, extract_thirdparty_dirs_column
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo
+from core.pubdev_utils import get_github_url_from_pubdev
 from core.maven_utils import analyze_maven_repository_url
 
 import pandas as pd
@@ -947,13 +948,30 @@ async def _process_repositories(api, df, log_queue=None):
                 version = row.get("version")
                 name = row.get("name", None)
                 
+                # Check if it's a pub.dev (Dart/Flutter) package
+                if isinstance(url, str) and (
+                    url.startswith("https://pub.dev/packages/") or
+                    url.startswith("https://pub.dartlang.org/packages/")
+                ):
+                    logger.info(f"检测到 pub.dev 包 URL: {url}")
+                    if log_queue:
+                        try:
+                            log_queue.put_nowait(f"[INFO] 检测到 pub.dev 包 URL: {url}")
+                        except:
+                            pass
+                    pubdev_info = await get_github_url_from_pubdev(url, version, name)
+                    github_url = pubdev_info.get("github_url")
+                    if github_url:
+                        result = await process_github_repository(api, github_url, version, name=name)
+                    else:
+                        result = await process_github_repository(api, url, version, name=name)
+
                 # Check if it's a Go package
-                is_go_pkg = False
-                if isinstance(url, str):
-                    if url.startswith("https://pkg.go.dev/") or url.startswith("https://go.dev/") or re.match(r"^go\.[\w\.-]+/", url):
-                        is_go_pkg = True
-                
-                if is_go_pkg:
+                elif isinstance(url, str) and (
+                    url.startswith("https://pkg.go.dev/") or
+                    url.startswith("https://go.dev/") or
+                    re.match(r"^go\.[\w\.-]+/", url)
+                ):
                     logger.info(f"检测到 Go 包 URL: {url}")
                     if log_queue:
                         try:
@@ -966,6 +984,7 @@ async def _process_repositories(api, df, log_queue=None):
                         result = await process_github_repository(api, github_url, version, name=name)
                     else:
                         result = await process_github_repository(api, url, version, name=name)
+
                 else:
                     # Check if it's a Maven URL
                     is_maven_url = isinstance(url, str) and (
