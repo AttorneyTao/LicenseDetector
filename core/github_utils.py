@@ -700,14 +700,23 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
                 version_resolve_logger.info(f"Found version range match: {candidate} for {version_str}")
                 return candidate, False
 
-    # 3. Partial match (e.g. "1.2" matches "1.2.3")
+    # 3. Name+version combined match for monorepos (e.g. "timing" + "1.0.2" -> "timing-v1.0.2")
+    if name:
+        name_lower = name.lower()
+        for candidate in candidate_versions:
+            cand_lower = candidate.lower()
+            if name_lower in cand_lower and version_str_lower in cand_lower:
+                version_resolve_logger.info(f"Found name+version combined match: {candidate} for name={name}, version={version_str}")
+                return candidate, False
+
+    # 4. Partial match (e.g. "1.2" matches "1.2.3")
     for candidate in candidate_versions:
         cand_lower = candidate.lower().lstrip("v")
         if version_str_lower in cand_lower:
             version_resolve_logger.info(f"Found partial version match: {candidate}")
             return candidate, False
 
-    # 4. Fallback: Gemini LLM
+    # 5. Fallback: LLM
     if USE_LLM:
         try:
             # prompt = f"""
