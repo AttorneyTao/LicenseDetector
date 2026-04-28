@@ -80,7 +80,8 @@ def _resolve_pubdev_version(all_versions: list[str], requested: Optional[str]) -
     Returns (resolved_version, used_default).
     """
     if not requested:
-        latest = all_versions[0] if all_versions else ""
+        # pub.dev API returns versions in ascending order (oldest first)
+        latest = all_versions[-1] if all_versions else ""
         logger.info(f"No version requested, using latest: {latest}")
         return latest, True
 
@@ -154,13 +155,28 @@ async def get_github_url_from_pubdev(
     # If we got the full package listing (no specific version requested), resolve version
     used_default = False
     if "versions" in raw:
-        all_versions = [v.get("version", "") for v in raw.get("versions", []) if v.get("version")]
-        effective_version, used_default = _resolve_pubdev_version(all_versions, effective_version)
-        # Re-fetch the specific version object
-        raw = await _fetch_pubdev_metadata(pkg_name, effective_version)
-        if not raw:
-            return {"github_url": None, "resolved_version": effective_version, "used_default": used_default,
-                    "license_in_pubspec": None, "pubspec": {}, "raw_info": {}}
+        # If a specific version was requested, resolve it; otherwise use the 'latest' object
+        # directly to avoid an extra API call
+        if effective_version:
+            all_versions = [v.get("version", "") for v in raw.get("versions", []) if v.get("version")]
+            effective_version, used_default = _resolve_pubdev_version(all_versions, effective_version)
+            raw = await _fetch_pubdev_metadata(pkg_name, effective_version)
+            if not raw:
+                return {"github_url": None, "resolved_version": effective_version, "used_default": used_default,
+                        "license_in_pubspec": None, "pubspec": {}, "raw_info": {}}
+        else:
+            # No version requested: use 'latest' embedded in the package listing
+            latest_obj = raw.get("latest", {})
+            if latest_obj:
+                raw = latest_obj
+                used_default = True
+            else:
+                all_versions = [v.get("version", "") for v in raw.get("versions", []) if v.get("version")]
+                effective_version, used_default = _resolve_pubdev_version(all_versions, None)
+                raw = await _fetch_pubdev_metadata(pkg_name, effective_version)
+                if not raw:
+                    return {"github_url": None, "resolved_version": effective_version, "used_default": used_default,
+                            "license_in_pubspec": None, "pubspec": {}, "raw_info": {}}
 
     pubspec = raw.get("pubspec", {})
     resolved_version = raw.get("version", effective_version)
