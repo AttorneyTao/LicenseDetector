@@ -46,6 +46,8 @@ def normalize_github_url(url: str) -> str:
     if not isinstance(url, str):
         return "" if url is None else str(url)
     url = url.strip()
+    # Strip Excel-encoded carriage returns (_x000D_ / _x000d_) and real CR/LF
+    url = re.sub(r'_x000[dD]_', '', url).strip()
     if url.startswith("github.com/"):
         return "https://" + url
     return url
