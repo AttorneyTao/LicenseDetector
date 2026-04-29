@@ -16,6 +16,7 @@ from typing import Optional, AsyncGenerator
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, RedirectResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -463,11 +464,20 @@ async def analyze_and_download(
 
         logger.info(f"输出文件已保存: {temp_output}")
 
-        # 返回文件
+        # 返回文件，文件发送完成后由 BackgroundTask 删除
+        def _cleanup_output(path: str):
+            if path and os.path.exists(path):
+                try:
+                    os.unlink(path)
+                    logger.debug(f"已删除临时输出文件: {path}")
+                except Exception as ex:
+                    logger.warning(f"删除临时输出文件失败: {ex}")
+
         return FileResponse(
             path=temp_output,
             filename=f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=BackgroundTask(_cleanup_output, temp_output)
         )
 
     except HTTPException:
@@ -486,7 +496,6 @@ async def analyze_and_download(
             "message": f"[SUCCESS] 作业 {job_id}: 处理完成",
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }, ensure_ascii=False))
-        # 注意：FileResponse会自动清理文件，所以这里只清理输入文件
         if temp_input and os.path.exists(temp_input):
             try:
                 os.unlink(temp_input)
@@ -886,17 +895,26 @@ async def analyze_with_stream_and_download(
             
             logger.info(f"输出文件已保存: {temp_output}")
             
-            # 返回文件
+            # 返回文件，文件发送完成后由 BackgroundTask 删除
+            def _cleanup_output_stream(path: str):
+                if path and os.path.exists(path):
+                    try:
+                        os.unlink(path)
+                        logger.debug(f"已删除临时输出文件: {path}")
+                    except Exception as ex:
+                        logger.warning(f"删除临时输出文件失败: {ex}")
+
             return FileResponse(
                 path=temp_output,
                 filename=f"output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                background=BackgroundTask(_cleanup_output_stream, temp_output)
             )
-            
+
         finally:
             # 移除处理器
             main_logger.removeHandler(stream_handler)
-        
+
     except HTTPException:
         raise
     except Exception as e:
