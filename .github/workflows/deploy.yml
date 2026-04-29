@@ -1,0 +1,33 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  deploy:
+    name: Pull & Restart Service
+    runs-on: self-hosted
+
+    steps:
+      - name: Pull latest code
+        run: |
+          cd /root/LicenseDetector
+          git fetch origin master
+          git reset --hard origin/master
+
+      - name: Sync dependencies
+        run: |
+          cd /root/LicenseDetector
+          uv sync
+
+      - name: Restart service
+        run: |
+          systemctl restart licensedetector.service
+
+      - name: Verify service is running
+        run: |
+          sleep 3
+          systemctl is-active licensedetector.service
+          echo "Deploy successful: $(date)"
