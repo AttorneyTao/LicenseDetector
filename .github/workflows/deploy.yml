@@ -30,4 +30,19 @@ jobs:
         run: |
           sleep 3
           systemctl is-active licensedetector.service
-          echo "Deploy successful: $(date)"
+
+      - name: Notify success
+        if: success()
+        run: |
+          cd /root/LicenseDetector
+          uv run python scripts/notify_deploy.py \
+            "github-actions" "success" \
+            "Triggered by push to master (workflow run: ${{ github.run_number }})" || true
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          cd /root/LicenseDetector
+          uv run python scripts/notify_deploy.py \
+            "github-actions" "failure" \
+            "Workflow run ${{ github.run_number }} failed — check Actions logs for details" || true
