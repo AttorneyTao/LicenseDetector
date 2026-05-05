@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import existing modules
 from core.github_utils import GitHubAPI, process_github_repository
 from core.config import MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo
@@ -32,6 +32,7 @@ from core.maven_utils import analyze_maven_repository_url
 
 import pandas as pd
 from tqdm import tqdm
+from pydantic import BaseModel
 
 # Setup logging
 loggers = setup_logging()
@@ -219,6 +220,39 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "GitHub License Analyzer API"
     }
+
+
+class DetectLicenseRequest(BaseModel):
+    text: str
+    source_url: Optional[str] = None
+
+
+@app.post("/api/v1/detect-license")
+async def detect_license(request: DetectLicenseRequest):
+    """
+    根据文本识别 SPDX license expression。
+
+    请求体（JSON）：
+    - **text**: 许可证文本内容（必填）
+    - **source_url**: 文本来源 URL（可选，仅用于结果追溯）
+
+    返回 LLM 分析结果，包含：
+    - **spdx_expression**: SPDX 表达式，如 `Apache-2.0 AND (MIT AND BSD-3-Clause)`
+    - **licenses**: 识别出的主许可证列表
+    - **bundled_licenses**: 嵌入的第三方许可证列表
+    - **is_dual_licensed**: 是否双重许可
+    - **license_relationship**: 许可证关系（AND / OR）
+    - **confidence**: 置信度（0.0–1.0）
+    - **source_url**: 原始来源 URL
+    """
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="text 字段不能为空")
+
+    result = await analyze_license_content_async(
+        content=request.text.strip(),
+        source_url=request.source_url
+    )
+    return JSONResponse(content=result)
 
 
 @app.get("/api/v1/logs/live")
