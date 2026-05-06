@@ -42,11 +42,11 @@ run-cli:
 
 run-api:
 	@echo "运行API模式（前台）..."
-	python main.py --api
+	uv run main.py --api
 
 run-api-bg:
 	@echo "运行API模式（后台）..."
-	python main.py --api > logs/api.log 2>&1 &
+	uv run main.py --api > logs/api.log 2>&1 &
 	@echo "API已在后台启动，访问: http://localhost:8000/docs"
 
 test:
