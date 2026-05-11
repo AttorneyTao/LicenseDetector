@@ -102,6 +102,36 @@ def _parse_package_name(url_or_name: str) -> str:
     return parts[0] if parts else ""
 
 
+def is_npm_package_url(url_or_name: str) -> bool:
+    """Return True when input points to a supported npm package source."""
+    if not isinstance(url_or_name, str):
+        return False
+
+    value = url_or_name.strip()
+    if not value:
+        return False
+
+    if value.startswith("@") and "/" in value:
+        return True
+
+    parsed = urlparse(value)
+    host = parsed.netloc.lower()
+    path = parsed.path.strip("/")
+
+    if host in {"www.npmjs.com", "npmjs.com"} and path.startswith("package/"):
+        return True
+    if host in {"www.npmjs.org", "npmjs.org"} and path:
+        return True
+    if host in {"registry.npmjs.org", "registry.npmmirror.com"} and path:
+        return True
+    if host == "www.npmmirror.com" and path.startswith("package/"):
+        return True
+    if host == "mirrors.tencent.com" and path.startswith("npm/"):
+        return True
+
+    return False
+
+
 def _normalize_requested_npm_version(version: Optional[str]) -> Optional[str]:
     """
     Normalize incoming npm version string without using LLM.
@@ -655,7 +685,14 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
                     github_url,
                     resolved_version,
                 )
-                github_scan_success = True
+                github_scan_success = github_result.get("status") == "success"
+                if not github_scan_success:
+                    logger.warning(
+                        "GitHub scan did not succeed for %s: %s",
+                        github_url,
+                        github_result.get("license_determination_reason") or github_result.get("error"),
+                    )
+                    github_result = {}
 
                 gh_used_default_branch = github_result.get("used_default_branch")
                 github_fields["used_default_branch"] = gh_used_default_branch

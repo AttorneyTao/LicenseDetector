@@ -27,6 +27,7 @@ from core.utils import get_concluded_license, extract_thirdparty_dirs_column, an
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo
+from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.maven_utils import analyze_maven_repository_url
 
@@ -1050,6 +1051,15 @@ async def _process_repositories(api, df, log_queue=None):
                         result = await process_github_repository(api, github_url, version, name=name)
                     else:
                         result = await process_github_repository(api, url, version, name=name)
+
+                elif is_npm_package_url(url):
+                    logger.info(f"妫€娴嬪埌 npm 鍖?URL: {url}")
+                    if log_queue:
+                        try:
+                            log_queue.put_nowait(f"[INFO] 妫€娴嬪埌 npm 鍖?URL: {url}")
+                        except:
+                            pass
+                    result = await process_npm_repository(url, version)
 
                 else:
                     # Check if it's a Maven URL

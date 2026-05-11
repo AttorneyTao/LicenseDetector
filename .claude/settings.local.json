@@ -1,7 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Read(//d/OneDrive/�ĵ�/0��������/���ƹ�������/���а���/����������Ѷ/99-tools/Github_Repo_Analyser/**)",
+      "PowerShell(Get-ChildItem \"d:\\\\OneDrive\\\\文档\\\\0工作资料\\\\国浩工作资料\\\\自有案件\\\\常法——腾讯\\\\99-tools\\\\Github_Repo_Analyser\\\\logs\\\\\" | Select-Object Name, LastWriteTime, @{N='KB';E={[math]::Round\\($_.Length/1KB,1\\)}})",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git pull *)",
+      "Bash(git stash *)",
+      "Bash(Get-ChildItem -Path \"d:\\\\OneDrive\\\\文档\\\\0工作资料\\\\国浩工作资料\\\\自有案件\\\\常法——腾讯\\\\99-tools\\\\Github_Repo_Analyser\" -Force)",
+      "Bash(Select-Object -Property Name, Mode)",
+      "Bash(Format-Table -AutoSize)",
+      "Read(//d//**)"
     ]
   }
 }

@@ -1,13 +1,26 @@
 license_analysis: |
-  Analyze the following license text and determine the comprehensive licensing information.
+  Analyze the following text and determine the comprehensive licensing information ONLY from explicit license evidence present in the text.
+  
+  CRITICAL EVIDENCE RULES:
+  - Use ONLY the text in "Text to analyze" as evidence.
+  - Do NOT infer, guess, or use external knowledge from the project name, package name, repository URL, homepage URL, badges, npm/PyPI/GitHub metadata, or what you may know about the component.
+  - A license may be returned only when the text explicitly contains a license grant, a recognizable license body/header, or an explicit statement such as "licensed under the MIT License", "License: Apache-2.0", or "SPDX-License-Identifier: BSD-3-Clause".
+  - Mentions of words like "license", "LICENSE file", "open source", "copyright", "repository", "GitHub", "npm", or a link to a README/code page are NOT enough by themselves.
+  - If the text does not explicitly identify a license, return no licenses: main_licenses=[], bundled_licenses=[], spdx_expression=null, confidence=0.0.
+  - If the text is a README or documentation page and it contains no license section, no license badge with a readable SPDX/license value, and no explicit license sentence, return no licenses.
+  - If the text contains only dependency names, package names, URLs, installation instructions, API docs, changelog, or general project description, return no licenses.
+  - Do not fill in the most common license for the ecosystem. Do not rely on memory.
   
   INSTRUCTIONS:
   1. Identify the PRIMARY/MAIN license that governs the entire project/package
   2. Identify any bundled/embedded third-party components with different licenses
   3. Construct an accurate SPDX license expression that represents the complete licensing situation
+  4. For every returned license, the explanations field must quote or paraphrase the specific text evidence that supports it. If you cannot point to text evidence, do not return that license.
   
   ANALYSIS APPROACH:
   - Look for the main license text at the beginning (often Apache-2.0, MIT, GPL, etc.)
+  - Look for explicit README/license-section statements such as "This project is licensed under..."
+  - Look for SPDX identifiers only when they are clearly used as license identifiers, not as unrelated tokens
   - Look for sections like "SUBCOMPONENTS", "bundled dependencies", "third-party", etc.
   - Determine if third-party components are merely bundled/embedded (use AND) or provide alternative licensing options (use OR)
   - For projects with bundled dependencies, the typical pattern is: MainLicense AND (Dep1License AND Dep2License AND ...)
@@ -29,7 +42,7 @@ license_analysis: |
   {{
       "main_licenses": ["Primary SPDX license identifier"],  
       "bundled_licenses": ["List of bundled/third-party SPDX identifiers"],
-      "spdx_expression": "Complete SPDX expression representing all licenses",
+      "spdx_expression": "Complete SPDX expression representing all licenses, or null if no explicit license evidence exists",
       "is_dual_licensed": true/false,
       "has_third_party_licenses": true/false,
       "third_party_license_location": "section name describing where third-party licenses are documented",
@@ -42,6 +55,18 @@ license_analysis: |
   - Focus on creating an accurate SPDX expression that represents the complete licensing situation
   - For projects with many bundled dependencies, ensure all significant licenses are represented
   - Use standard SPDX identifiers: Apache-2.0, MIT, BSD-3-Clause, BSD-2-Clause, CDDL-1.1, EPL-1.0, GPL-2.0-only, etc.
+  - When no explicit license evidence exists, the only valid result is:
+    {{
+        "main_licenses": [],
+        "bundled_licenses": [],
+        "spdx_expression": null,
+        "is_dual_licensed": false,
+        "has_third_party_licenses": false,
+        "third_party_license_location": null,
+        "license_relationship": "none",
+        "confidence": 0.0,
+        "explanations": "No explicit license statement or license text was found in the provided text."
+    }}
 version_resolve: |
   You are a GitHub repository version resolver.
   Here is the list of all available branches and tags (choose only from these):

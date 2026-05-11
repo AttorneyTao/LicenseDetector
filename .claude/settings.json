@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"d:/OneDrive/文档/0工作资料/国浩工作资料/自有案件/常法——腾讯/99-tools/Github_Repo_Analyser\" push origin master)"
+    ]
+  }
+}

@@ -16,7 +16,7 @@ import asyncio  # 新增：导入 asyncio
 from httpx import AsyncClient
 import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential
-from core.npm_utils import process_npm_repository
+from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
@@ -1037,11 +1037,7 @@ async def process_github_repository(
     substep_logger = logging.getLogger('substep')
     url_logger = logging.getLogger('url')
     substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
-    if isinstance(github_url, str) and (github_url.startswith("https://www.npmjs.com/") or 
-    github_url.startswith("https://registry.npmjs.org/") or 
-    github_url.startswith("https://registry.npmmirror.com/") or
-    (github_url.startswith("https://mirrors.tencent.com/npm/") and ("/-/" in github_url or "/package/" in github_url))
-):
+    if is_npm_package_url(github_url):
         substep_logger.info(f"Detected npm registry URL: {github_url}, calling process_npm_repository()")
         npm_result = await process_npm_repository(github_url, version)
         if npm_result is not None and npm_result.get("status") != "error":
