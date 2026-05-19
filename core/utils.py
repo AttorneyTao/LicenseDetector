@@ -704,8 +704,104 @@ def get_concluded_license(
     
     if is_valid_license(license_type):
         return str(license_type).strip()
-    
+
     return "Unlicensed"
+
+
+_RISK_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _load_risk_config() -> Dict[str, Any]:
+    """Load license_risk.yaml on first use and cache it."""
+    global _RISK_CONFIG_CACHE
+    if _RISK_CONFIG_CACHE is not None:
+        return _RISK_CONFIG_CACHE
+    config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "license_risk.yaml")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        logger.warning(f"license_risk.yaml not found at {config_path}; defaulting all risk_level to 'unknown'")
+        raw = {}
+
+    default = (raw.get("default") or "unknown").strip().lower()
+    severity_order = [s.strip().lower() for s in (raw.get("severity_order") or ["high", "medium", "low", "unknown"])]
+    license_to_risk: Dict[str, str] = {}
+    for _, cat_def in (raw.get("categories") or {}).items():
+        if not isinstance(cat_def, dict):
+            continue
+        risk = (cat_def.get("risk_level") or default).strip().lower()
+        for lic in (cat_def.get("licenses") or []):
+            if not isinstance(lic, str):
+                continue
+            license_to_risk[_normalize_license_id(lic)] = risk
+
+    _RISK_CONFIG_CACHE = {
+        "default": default,
+        "severity_order": severity_order,
+        "license_to_risk": license_to_risk,
+    }
+    return _RISK_CONFIG_CACHE
+
+
+def _normalize_license_id(lic: str) -> str:
+    """Canonical key for matching SPDX identifiers in the risk table.
+
+    Lower-cases, strips whitespace, drops the SPDX "+" suffix and any
+    "-only" / "-or-later" qualifier so that GPL-3.0, GPL-3.0-only and
+    GPL-3.0-or-later all map to the same risk entry.
+    """
+    s = lic.strip().lower().rstrip("+")
+    for suffix in ("-or-later", "-only"):
+        if s.endswith(suffix):
+            s = s[: -len(suffix)]
+            break
+    return s
+
+
+def _split_spdx_expression(expr: str) -> List[str]:
+    """Split an SPDX expression into individual license tokens.
+
+    Handles AND / OR / WITH and parentheses. Returns the licence
+    identifiers only (drops exception names after WITH).
+    """
+    if not expr:
+        return []
+    cleaned = re.sub(r"[()]", " ", expr)
+    tokens = re.split(r"\s+(?:AND|OR|WITH)\s+", cleaned, flags=re.IGNORECASE)
+    return [t.strip() for t in tokens if t and t.strip()]
+
+
+def get_risk_level(concluded_license: Optional[str]) -> str:
+    """Return the risk_level for a concluded license string.
+
+    The input may be a single SPDX identifier ("BSD-3-Clause"), an SPDX
+    expression ("Apache-2.0 AND MIT AND Others"), or the synthetic
+    "Unlicensed" / empty value. When multiple licenses are present the
+    aggregate is the worst risk in the severity_order from the config.
+    """
+    config = _load_risk_config()
+    default = config["default"]
+    severity_order = config["severity_order"]
+    license_to_risk = config["license_to_risk"]
+
+    if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
+        return default
+
+    expr = str(concluded_license).strip()
+    if not expr:
+        return default
+
+    tokens = _split_spdx_expression(expr) or [expr]
+    risks = []
+    for token in tokens:
+        key = _normalize_license_id(token)
+        risks.append(license_to_risk.get(key, default))
+
+    for level in severity_order:
+        if level in risks:
+            return level
+    return default
 
 
 def extract_thirdparty_dirs_column(df):

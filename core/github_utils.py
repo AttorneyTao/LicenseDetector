@@ -1173,6 +1173,9 @@ async def process_github_repository(
         license_file_analysis = None
         license_url = ""
         license_content = ""
+        # Preserve the repo-level LICENSE text loaded here so later steps that
+        # reset `license_content` can still use it for copyright extraction.
+        repo_license_content = ""
         try:
             license_info = await api.get_license(owner, repo, ref=resolved_version)
             if license_info:
@@ -1193,6 +1196,7 @@ async def process_github_repository(
                         substep_logger.warning(f"Failed to decode license content: {str(e)}")
                         # 如果解码失败，继续使用原始内容
                     license_url = license_info.get("_links", {}).get("html") or license_info.get("download_url", "")
+                    repo_license_content = license_content
                     license_file_analysis = await analyze_license_content_async(license_content, license_url)
                     # For root-level URLs, return early; for subdir URLs, save result
                     # and continue so the subdir-specific license takes priority
@@ -1346,13 +1350,29 @@ async def process_github_repository(
                 }
 
         # Step 13: Try repo-level license
+        # Prefer the LLM analysis of the repo-level LICENSE file (captured in
+        # step 5) over GitHub's auto-detected spdx_id, which returns
+        # NOASSERTION for licenses with non-standard preambles (e.g. PyTorch's
+        # BSD-3-Clause with copyright headers).
         substep_logger.info("Step 13/15: Trying repo-level license")
-        if license_info and license_info.get("license", {}).get("spdx_id"):
-            license_type = license_info.get("license", {}).get("spdx_id")
-            determination_reason = f"License determined via GitHub API: {license_type}"
+        llm_license = None
+        if license_file_analysis and license_file_analysis.get("licenses"):
+            llm_license = (
+                license_file_analysis.get("spdx_expression")
+                or license_file_analysis["licenses"][0]
+            )
+        github_spdx = license_info.get("license", {}).get("spdx_id") if license_info else None
+        if github_spdx and github_spdx.strip().upper() == "NOASSERTION":
+            github_spdx = None
+        resolved_repo_license = llm_license or github_spdx
+        if resolved_repo_license:
+            if llm_license:
+                determination_reason = f"License determined via LLM analysis of repo-level LICENSE: {llm_license}"
+            else:
+                determination_reason = f"License determined via GitHub API: {resolved_repo_license}"
             copyright_notice = await construct_copyright_notice_async(
                 await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
-                None, license_content
+                None, repo_license_content or license_content
             )
             return {
                 "input_url": input_url,
@@ -1361,12 +1381,12 @@ async def process_github_repository(
                 "resolved_version": resolved_version,
                 "used_default_branch": used_default_branch,
                 "component_name": component_name,
-                "license_type": license_type,
+                "license_type": resolved_repo_license,
                 "license_files": license_url,
                 "license_analysis": license_file_analysis,
                 "has_license_conflict": False,
                 "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
-                "license_file_license": license_type,  # 添加这行以确保license_file_license被设置
+                "license_file_license": resolved_repo_license,
                 "copyright_notice": copyright_notice,
                 "status": "success",
                 "license_determination_reason": determination_reason

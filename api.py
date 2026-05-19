@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import existing modules
 from core.github_utils import GitHubAPI, process_github_repository
 from core.config import MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_risk_level
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo
@@ -1196,7 +1196,10 @@ def _generate_output(results):
         if _has_thirdparty(r) else r.get("concluded_license"),
         axis=1
     )
-    
+
+    # Derive risk_level from the final concluded_license
+    output_df["risk_level"] = output_df["concluded_license"].apply(get_risk_level)
+
     # Reorder columns
     existing_columns = [col for col in RESULT_COLUMNS_ORDER if col in output_df.columns]
     remaining_columns = [col for col in output_df.columns if col not in existing_columns]

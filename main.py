@@ -38,7 +38,7 @@ from tqdm import tqdm
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_risk_level
 from core.go_utils import  get_github_url_from_pkggo
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import process_crate_repository
@@ -414,7 +414,11 @@ async def main_async():
             if _has_thirdparty(r) else r.get("concluded_license"),
             axis=1
         )
-        
+
+        # 根据 concluded_license 推导 risk_level
+        logger.info("生成 risk_level...")
+        output_df["risk_level"] = output_df["concluded_license"].apply(get_risk_level)
+
         # 重排列顺序
         logger.info("重排列顺序...")
         # 获取实际存在的列（配置的列和实际数据的交集）

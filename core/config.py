@@ -35,6 +35,7 @@ RESULT_COLUMNS_ORDER = [
     "used_default_branch",
     "concluded_license",
     "license_files",
+    "risk_level",
     "copyright_notice",
     "license_type",    
     "license_analysis",
