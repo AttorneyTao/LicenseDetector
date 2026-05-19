@@ -24,10 +24,20 @@ default: unknown
 # Aggregation policy used by code that combines multiple licenses in one
 # expression. Listed in order of severity (worst first).
 severity_order:
-  - 高风险
-  - 中风险
-  - 低风险
-  - 未知
+  - high
+  - medium
+  - low
+  - unknown
+
+# Display labels written to the output column. Keep the internal keys
+# (high/medium/low/unknown) for severity comparisons; only the human-facing
+# label is configurable here. Edit the right-hand side to change the
+# wording (e.g. switch to English).
+labels:
+  high: 高风险
+  medium: 中风险
+  low: 低风险
+  unknown: 未知风险
 
 categories:
   permissive:

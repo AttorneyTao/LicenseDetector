@@ -736,10 +736,20 @@ def _load_risk_config() -> Dict[str, Any]:
                 continue
             license_to_risk[_normalize_license_id(lic)] = risk
 
+    # Display labels are configurable via YAML; default to Chinese.
+    default_labels = {"high": "高风险", "medium": "中风险", "low": "低风险", "unknown": "未知风险"}
+    raw_labels = raw.get("labels") or {}
+    labels = {**default_labels}
+    if isinstance(raw_labels, dict):
+        for k, v in raw_labels.items():
+            if isinstance(k, str) and v is not None:
+                labels[k.strip().lower()] = str(v)
+
     _RISK_CONFIG_CACHE = {
         "default": default,
         "severity_order": severity_order,
         "license_to_risk": license_to_risk,
+        "labels": labels,
     }
     return _RISK_CONFIG_CACHE
 
@@ -784,13 +794,17 @@ def get_risk_level(concluded_license: Optional[str]) -> str:
     default = config["default"]
     severity_order = config["severity_order"]
     license_to_risk = config["license_to_risk"]
+    labels = config["labels"]
+
+    def _label(level: str) -> str:
+        return labels.get(level, level)
 
     if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
-        return default
+        return _label(default)
 
     expr = str(concluded_license).strip()
     if not expr:
-        return default
+        return _label(default)
 
     tokens = _split_spdx_expression(expr) or [expr]
     risks = []
@@ -800,8 +814,8 @@ def get_risk_level(concluded_license: Optional[str]) -> str:
 
     for level in severity_order:
         if level in risks:
-            return level
-    return default
+            return _label(level)
+    return _label(default)
 
 
 def extract_thirdparty_dirs_column(df):
