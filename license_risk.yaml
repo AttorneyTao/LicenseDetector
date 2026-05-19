@@ -24,10 +24,10 @@ default: unknown
 # Aggregation policy used by code that combines multiple licenses in one
 # expression. Listed in order of severity (worst first).
 severity_order:
-  - high
-  - medium
-  - low
-  - unknown
+  - 高风险
+  - 中风险
+  - 低风险
+  - 未知
 
 categories:
   permissive:
