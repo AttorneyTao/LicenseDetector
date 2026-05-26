@@ -75,6 +75,7 @@ categories:
       - Ruby
       - OFL-1.1
       - Unicode-DFS-2016
+      - BlueOak-1.0.0
 
   weak-copyleft:
     risk_level: medium
