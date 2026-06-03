@@ -1,0 +1,39 @@
+# Normalize line endings: store text as LF in the repo, check out as LF.
+* text=auto eol=lf
+
+# Explicit text types (defensive)
+*.py    text eol=lf
+*.md    text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.sh    text eol=lf
+*.conf  text eol=lf
+*.svg   text eol=lf
+*.lock  text eol=lf
+
+# Shell scripts must stay LF
+*.sh    text eol=lf
+
+# Windows scripts keep CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary files: never normalize
+*.xlsx  binary
+*.xls   binary
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.whl   binary
