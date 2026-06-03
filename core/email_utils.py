@@ -152,24 +152,26 @@ def send_analysis_result(
     recipient_email: str,
     output_file_path: str,
     project_name: str = "GitHub License Analyzer",
-    smtp_config: Optional[EmailConfig] = None
+    smtp_config: Optional[EmailConfig] = None,
+    subject: Optional[str] = None
 ) -> bool:
     """
     发送分析结果邮件
-    
+
     Args:
         recipient_email: 收件人邮箱
         output_file_path: 输出Excel文件路径
         project_name: 项目名称
         smtp_config: 邮件配置
-        
+        subject: 邮件主题（可选，未指定时使用默认主题）
+
     Returns:
         成功返回True，失败返回False
     """
     try:
         sender = EmailSender(smtp_config)
-        
-        subject = f"{project_name} - 分析结果"
+
+        subject = subject or f"{project_name} - 分析结果"
         body = f"""
 您好，
 

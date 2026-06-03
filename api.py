@@ -300,16 +300,18 @@ async def analyze_licenses(
     email: str = Form(...),
     smtp_server: Optional[str] = Form(None),
     smtp_port: Optional[int] = Form(None),
+    email_subject: Optional[str] = Form(None),
 ):
     """
     分析许可证信息并发送结果到邮箱
-    
+
     Args:
         file: 上传的Excel文件 (input.xlsx)
         email: 接收结果的邮箱地址
         smtp_server: SMTP服务器地址（可选，使用环境变量）
         smtp_port: SMTP端口（可选，使用环境变量）
-        
+        email_subject: 邮件主题（可选，未指定时使用默认主题）
+
     Returns:
         分析结果和邮件发送状态
     """
@@ -385,7 +387,8 @@ async def analyze_licenses(
         email_sent = send_analysis_result(
             recipient_email=email,
             output_file_path=temp_output,
-            smtp_config=email_config
+            smtp_config=email_config,
+            subject=email_subject
         )
 
         # 返回结果
@@ -678,16 +681,18 @@ async def analyze_with_stream_and_email(
     email: str = Form(...),
     smtp_server: Optional[str] = Form(None),
     smtp_port: Optional[int] = Form(None),
+    email_subject: Optional[str] = Form(None),
 ):
     """
     分析许可证信息，流式返回日志，完成后发送邮件
-    
+
     Args:
         file: 上传的Excel文件 (input.xlsx)
         email: 接收结果的邮箱地址
         smtp_server: SMTP服务器地址（可选）
         smtp_port: SMTP端口（可选）
-        
+        email_subject: 邮件主题（可选，未指定时使用默认主题）
+
     Returns:
         流式日志响应，最后输出邮件发送状态
     """
@@ -813,7 +818,8 @@ async def analyze_with_stream_and_email(
                 email_sent = send_analysis_result(
                     recipient_email=email,
                     output_file_path=temp_output,
-                    smtp_config=email_config
+                    smtp_config=email_config,
+                    subject=email_subject
                 )
 
                 if email_sent:
