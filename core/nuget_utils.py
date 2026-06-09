@@ -5,6 +5,7 @@ import platform
 from openai import AsyncOpenAI
 from core.config import LLM_CONFIG
 from core.llm_provider import get_llm_provider
+from core.utils import find_matching_version
 import yaml
 from bs4 import BeautifulSoup
 import json
@@ -127,33 +128,31 @@ async def process_nuget_packages(name: str, version: str) -> dict:
                     logger.info(f"NuGet API 原始返回数据: {raw_text}")
                     data = await resp.json()
                     items = data.get("items", [])
-                    found = False
-                    entry = {}
-                    # 查找指定版本
+                    # 收集所有版本对应的 catalogEntry（registration 页按版本升序，最后一个即最新）
+                    all_entries = []
                     for page in items:
                         for pkg in page.get("items", []):
-                            ver = pkg.get("catalogEntry", {}).get("version")
-                            if ver and ver.lower() == version.lower():
-                                entry = pkg.get("catalogEntry", {})
-                                resolved_version = ver
-                                # 优先选择 licenseExpression
-                                license_type = entry.get("licenseExpression")
-                                if not license_type and entry.get("licenseUrl"):
-                                    license_type = await get_license_type_by_llm(entry.get("licenseUrl"), name, resolved_version or version)
-                                github_url = entry.get("projectUrl")
-                                found = True
-                                break
-                        if found:
-                            break
-                    # 如果没有找到指定版本，取最新版本
-                    if not found:
-                        for page in reversed(items):
-                            if page.get("items"):
-                                entry = page["items"][-1].get("catalogEntry", {})
-                                resolved_version = entry.get("version")
-                                license_type = entry.get("licenseExpression") or entry.get("licenseUrl")
-                                github_url = entry.get("projectUrl")
-                                break
+                            ce = pkg.get("catalogEntry", {})
+                            if ce.get("version"):
+                                all_entries.append(ce)
+                    entry = {}
+                    # 精确 + 补零数值等价匹配（"1.0" == "1.0.0"），取代原来的纯精确匹配
+                    matched_ver = find_matching_version(version, [ce["version"] for ce in all_entries])
+                    if matched_ver is not None:
+                        entry = next(ce for ce in all_entries if ce["version"] == matched_ver)
+                        resolved_version = entry.get("version")
+                        # 优先选择 licenseExpression
+                        license_type = entry.get("licenseExpression")
+                        if not license_type and entry.get("licenseUrl"):
+                            license_type = await get_license_type_by_llm(entry.get("licenseUrl"), name, resolved_version or version)
+                        github_url = entry.get("projectUrl")
+                    elif all_entries:
+                        # 没有匹配版本，回退到最新版本
+                        entry = all_entries[-1]
+                        resolved_version = entry.get("version")
+                        license_type = entry.get("licenseExpression") or entry.get("licenseUrl")
+                        github_url = entry.get("projectUrl")
+                        logger.warning(f"未匹配到 NuGet 版本 {version!r}，回退到最新版本: {resolved_version}")
                     # license_files 用 NuGet 包主页
                     if resolved_version:
                         license_files = f"https://www.nuget.org/packages/{name}/{resolved_version}"

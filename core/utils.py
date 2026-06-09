@@ -35,6 +35,48 @@ def is_sha_version(version: str) -> bool:
     )
 
 
+def version_to_tuple(version: str) -> Optional[tuple]:
+    """
+    将「纯数字分段」的版本号转成数值元组，用于补零等价比较（"1.0" -> (1, 0)）。
+    含非纯数字分段（rc/dev/x/带后缀等）或为空时返回 None，表示不参与数值等价匹配。
+    """
+    if not isinstance(version, str):
+        return None
+    parts = []
+    for p in version.strip().lower().lstrip("v").split("."):
+        if p.isdigit():
+            parts.append(int(p))
+        else:
+            return None
+    return tuple(parts) if parts else None
+
+
+def find_matching_version(requested: str, candidates: List[str]) -> Optional[str]:
+    """
+    在候选版本里找与 requested「数值等价」的那个（补零后元组相等，"1.0" == "1.0.0"）。
+
+    先精确匹配（忽略大小写与前导 'v'），再做补零数值等价匹配；都不中返回 None。
+    只对纯数字版本生效，rc/dev/x 等非纯净 release 不会被误配。候选里靠前者优先。
+    """
+    if not requested:
+        return None
+    req_norm = requested.strip().lower().lstrip("v")
+    for cand in candidates:
+        if isinstance(cand, str) and cand.strip().lower().lstrip("v") == req_norm:
+            return cand
+    req_tuple = version_to_tuple(requested)
+    if req_tuple is None:
+        return None
+    for cand in candidates:
+        cand_tuple = version_to_tuple(cand)
+        if cand_tuple is None:
+            continue
+        n = max(len(req_tuple), len(cand_tuple))
+        if req_tuple + (0,) * (n - len(req_tuple)) == cand_tuple + (0,) * (n - len(cand_tuple)):
+            return cand
+    return None
+
+
 def find_readme(tree_items: List[Dict], sub_path: str = "") -> Optional[str]:
     """
     Finds README file in the repository tree.

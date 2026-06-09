@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 import aiohttp
 import aiofiles
+from .utils import find_matching_version
 
 log_dir = "./logs"
 os.makedirs(log_dir, exist_ok=True)
@@ -90,19 +91,12 @@ def _resolve_pubdev_version(all_versions: list[str], requested: Optional[str]) -
         logger.info(f"No version requested, using latest: {latest}")
         return latest, True
 
-    req = requested.lstrip("v")
-
-    # 1. Exact match
-    for v in all_versions:
-        if v.lstrip("v") == req:
-            logger.info(f"Exact version match: {v}")
-            return v, False
-
-    # 2. Prefix match
-    for v in all_versions:
-        if v.lstrip("v").startswith(req):
-            logger.info(f"Prefix version match: {v} for requested {requested}")
-            return v, False
+    # 1+2. 精确匹配 + 补零数值等价匹配（"1.2" == "1.2.0"）
+    #      取代原来的 startswith 前缀匹配（会把 "1.2" 误配到 "1.25.0"）
+    matched = find_matching_version(requested, all_versions)
+    if matched is not None:
+        logger.info(f"Version match: {matched} for requested {requested}")
+        return matched, False
 
     # 3. Fallback
     latest = all_versions[0] if all_versions else requested

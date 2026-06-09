@@ -16,6 +16,7 @@ from .utils import (
     analyze_license_content_async,
     find_top_level_thirdparty_dirs_local,
     construct_copyright_notice_async,
+    find_matching_version,
 )
 from bs4 import BeautifulSoup
 import tempfile
@@ -453,15 +454,16 @@ async def resolve_npm_version(
                 )
                 return candidate, False
 
-    # 3. Partial match (e.g. "1.2" matches "1.2.3")
-    for candidate in versions:
-        cand_lower = candidate.lower().lstrip("v")
-        if version_str_lower in cand_lower:
-            version_resolve_logger.info(
-                "Found partial npm version match: %s",
-                candidate,
-            )
-            return candidate, False
+    # 3. Numeric-equivalence match with trailing-zero padding ("1.0" == "1.0.0")
+    #    取代原来的裸子串匹配，避免把 "1.0" 误配到 "1.0.5" / "11.0.0" / "0.1.0" 等
+    normalized = find_matching_version(version_str, versions)
+    if normalized is not None:
+        version_resolve_logger.info(
+            "Found normalized npm version match: %s for %s",
+            normalized,
+            version_str,
+        )
+        return normalized, False
 
     # 4. LLM fallback
     return _llm_choose_npm_version(

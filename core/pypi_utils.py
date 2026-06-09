@@ -196,10 +196,40 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             }
             
         # 3. 版本处理
-        if version and version in metadata["releases"]:
-            resolved_version = version
-        else:
-            resolved_version = metadata["info"]["version"]  # 最新版本
+        # PyPI releases 的 key 是精确 release 串（"1.0.0"），输入常缺省 patch 位（"1.0"/"1.25"）。
+        # 先精确命中；不中则按「补零后的数值元组相等」匹配（"1.0" == "1.0.0"），避免静默回退到最新版。
+        releases = metadata["releases"]
+        resolved_version = None
+        if version:
+            if version in releases:
+                resolved_version = version
+            else:
+                def _ver_tuple(s):
+                    parts = []
+                    for p in str(s).strip().lower().lstrip("v").split("."):
+                        if p.isdigit():
+                            parts.append(int(p))
+                        else:
+                            return None  # 含非纯数字段（rc/dev 等）→ 不参与数值等价匹配
+                    return tuple(parts) if parts else None
+
+                req = _ver_tuple(version)
+                if req:
+                    for key in releases:
+                        kt = _ver_tuple(key)
+                        if kt is None or not releases[key]:  # 跳过非纯数字 key 和被 yank 的空 release
+                            continue
+                        n = max(len(req), len(kt))
+                        if req + (0,) * (n - len(req)) == kt + (0,) * (n - len(kt)):
+                            resolved_version = key
+                            logger.info(f"Normalized version match: input {version} -> PyPI release {key}")
+                            break
+        if resolved_version is None:
+            resolved_version = metadata["info"]["version"]  # 回退到最新版本
+            if version:
+                logger.warning(
+                    f"No PyPI release matched requested version {version!r}, falling back to latest: {resolved_version}"
+                )
         
         # 4. 获取版本特定信息
         version_info = next((r for r in metadata["releases"][resolved_version] 

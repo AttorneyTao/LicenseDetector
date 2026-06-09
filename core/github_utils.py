@@ -633,13 +633,20 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
         version_resolve_logger.info(f"Version {version} detected as SHA, using directly.")
         return version, False
 
-    # 新增：处理 v0.0.0-20200907205600-7a23bdc65eef 或 0.0.0-20200907205600-7a23bdc65eef 格式
+    # 新增：处理 Go pseudo-version 的三种格式 (https://go.dev/ref/mod#pseudo-versions)
+    #   form 1: vX.0.0-yyyymmddhhmmss-sha            (无更早的 tag)
+    #   form 2: vX.Y.Z-pre.0.yyyymmddhhmmss-sha      (基于 pre-release tag)
+    #   form 3: vX.Y.Z-0.yyyymmddhhmmss-sha          (基于 release tag, 例如 v1.3.2-0.20230802210424-5b0b94c5c0d3)
+    # 仍优先返回 commit id（短 SHA）作为实际使用的版本信息
     if version:
         version_str = str(version).strip()
-        # 检查是否匹配模式：可选的'v'前缀 + 0.0.0-时间戳-SHA格式
-        match = re.match(r'^v?\d+\.\d+\.\d+-\d{14}-([a-f0-9]+)$', version_str, re.IGNORECASE)
+        match = re.match(
+            r'^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]*?)?[.\-](\d{14})-([a-f0-9]{7,40})$',
+            version_str,
+            re.IGNORECASE,
+        )
         if match:
-            sha = match.group(1)[:7]  # 取第三节的前7位作为SHA
+            sha = match.group(2)[:7]  # 取 commit 哈希前 7 位
             version_resolve_logger.info(f"Version {version} detected as Go pseudo-version, extracted SHA: {sha}")
             return sha, False
 
@@ -711,12 +718,28 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
                 version_resolve_logger.info(f"Found name+version combined match: {candidate} for name={name}, version={version_str}")
                 return candidate, False
 
-    # 4. Partial match (e.g. "1.2" matches "1.2.3")
-    for candidate in candidate_versions:
-        cand_lower = candidate.lower().lstrip("v")
-        if version_str_lower in cand_lower:
-            version_resolve_logger.info(f"Found partial version match: {candidate}")
-            return candidate, False
+    # 4. Numeric-equivalence match with trailing-zero padding (e.g. "1.0" == "1.0.0", "1.25" == "1.25.0")
+    #    只对「纯数字分段」的版本做补零后的数值元组相等比较；rc/dev/x/带后缀等非纯净 release 不参与，
+    #    避免之前的裸子串匹配把 "1.0" 错配到 "1.0.x" 分支 / "1.25.0rc1" 这类预发布（甚至 "0.1.0"）上。
+    def _ver_tuple(s):
+        parts = []
+        for p in s.lower().lstrip("v").split("."):
+            if p.isdigit():
+                parts.append(int(p))
+            else:
+                return None  # 含非纯数字段 → 不参与数值等价匹配
+        return tuple(parts) if parts else None
+
+    req_tuple = _ver_tuple(version_str)
+    if req_tuple:
+        for candidate in candidate_versions:
+            cand_tuple = _ver_tuple(candidate)
+            if cand_tuple is None:
+                continue
+            n = max(len(req_tuple), len(cand_tuple))
+            if req_tuple + (0,) * (n - len(req_tuple)) == cand_tuple + (0,) * (n - len(cand_tuple)):
+                version_resolve_logger.info(f"Found normalized version match: {candidate} for {version_str}")
+                return candidate, False
 
     # 5. Fallback: LLM
     if USE_LLM:
