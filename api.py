@@ -1147,12 +1147,10 @@ async def _process_repositories(api, df, log_queue=None):
                     "input_name": name
                 }
             finally:
-                # 更新进度计数
+                # 更新进度计数：每完成一个就上报，保证前端进度条平滑准确
                 async with lock:
                     completed_count += 1
-                    # 每完成5个任务或最后一个任务时输出进度
-                    if completed_count % 5 == 0 or completed_count == total_count:
-                        await log_progress()
+                    await log_progress()
     
     # Process all rows
     tasks = [process_single(row, idx) for idx, row in df.iterrows()]

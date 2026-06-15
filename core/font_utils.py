@@ -487,9 +487,15 @@ async def process_font_entry(
     version: Optional[str],
     url: str,
 ) -> Dict[str, Any]:
-    """处理单个字体条目，按来源站点路由到对应 handler。"""
+    """处理单个字体条目，按来源站点路由到对应 handler。
+
+    字体模式下不审查版本：字体没有软件包意义上的版本，统一忽略输入 version，
+    GitHub 来源直接走默认分支（不触发版本匹配 / LLM 版本解析）。
+    """
     category = classify_font_source(url)
-    logger.info(f"字体条目路由: name={name} category={category} url={url}")
+    # 字体模式忽略版本，避免对 GitHub 来源做无意义的版本审查
+    version = None
+    logger.info(f"字体条目路由: name={name} category={category} url={url}（字体模式不审查版本）")
 
     try:
         if category == "github":

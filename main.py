@@ -431,7 +431,8 @@ async def main_async(font_mode: bool = False):
         font_mode: True 时走字体输入流程 (process_all_fonts)，否则走默认软件包流程。
     """
     load_dotenv(".env")
-    loggers = setup_logging()
+    # CLI 模式下控制台只保留进度条与关键里程碑（WARNING+），详细日志仍写入 logs/
+    loggers = setup_logging(console_level=logging.WARNING)
     logger = loggers["main"]
 
     try:
@@ -444,6 +445,7 @@ async def main_async(font_mode: bool = False):
         logger.info("Step 2: Reading input Excel file")
         df = pd.read_excel("input.xlsx")
         logger.info(f"Read {len(df)} rows from input file")
+        print(f"📄 已读取 {len(df)} 行输入（模式：{'字体扫描' if font_mode else '软件包'}）")
 
         # 并发处理仓库
         if font_mode:
@@ -529,6 +531,7 @@ async def main_async(font_mode: bool = False):
         logger.info(f"处理完成! 共处理 {len(results)} 个仓库")
         logger.info(f"结果已保存到: {output_file}")
         logger.info(f"最新结果副本已保存到: {latest_file}")
+        print(f"✅ 处理完成！共 {len(results)} 条，结果已保存到 {output_file}")
         
     except Exception as e:
         logger.error(f"Error in main_async: {str(e)}", exc_info=True)

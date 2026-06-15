@@ -13,61 +13,61 @@ import os
 import sys
 import codecs
 
-def setup_logging():
-    # Configure logging
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(r'logs/github_license_analyzer.log', encoding='utf-8'),
-            logging.StreamHandler()
-        ]
-    )
+def _is_console_handler(h):
+    """判断是否为输出到控制台的 StreamHandler（排除 FileHandler 子类）。"""
+    return isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+
+
+def _ensure_file_logger(name, filename, level=logging.INFO):
+    """为命名 logger 绑定一个文件 handler；幂等，避免重复调用导致日志重复。"""
+    lg = logging.getLogger(name)
+    lg.setLevel(level)
+    abspath = os.path.abspath(filename)
+    for h in lg.handlers:
+        if isinstance(h, logging.FileHandler) and os.path.abspath(getattr(h, "baseFilename", "")) == abspath:
+            return lg  # 已绑定，跳过
+    handler = logging.FileHandler(filename, encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    lg.addHandler(handler)
+    return lg
+
+
+def setup_logging(console_level=logging.INFO):
+    """配置日志。
+
+    Args:
+        console_level: 控制台(StreamHandler)输出级别。文件始终记录 DEBUG 起的完整日志；
+            CLI 模式可传 logging.WARNING，让控制台保持干净（只留进度条），详细日志仍写入 logs/。
+    """
+    os.makedirs('logs', exist_ok=True)
+
+    root = logging.getLogger()
+    if not root.handlers:
+        # 首次配置：文件记录全量，控制台单独建 handler 以便单独调级别
+        root.setLevel(logging.DEBUG)
+        fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler = logging.FileHandler(r'logs/github_license_analyzer.log', encoding='utf-8')
+        file_handler.setFormatter(fmt)
+        file_handler.setLevel(logging.DEBUG)
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+        root.addHandler(console_handler)
+
+    # 始终按入参刷新控制台 handler 的级别（支持二次调用调整）
+    for h in root.handlers:
+        if _is_console_handler(h):
+            h.setLevel(console_level)
+
     logger = logging.getLogger(__name__)
 
-    # Configure URL construction logging
-    url_logger = logging.getLogger('url_construction')
-    url_logger.setLevel(logging.INFO)
-    url_handler = logging.FileHandler(r'logs/url_construction.log', encoding='utf-8')
-    url_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    url_logger.addHandler(url_handler)
-
-    # Configure LLM logging
-    llm_logger = logging.getLogger('llm_interaction')
-    llm_logger.setLevel(logging.INFO)
-    llm_handler = logging.FileHandler(r'logs/llm_interaction.log', encoding='utf-8')
-    llm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    llm_logger.addHandler(llm_handler)
-
-    # Add substep logging
-    substep_logger = logging.getLogger('substep')
-    substep_logger.setLevel(logging.INFO)
-    substep_handler = logging.FileHandler(r'logs/substep.log', encoding='utf-8')
-    substep_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    substep_logger.addHandler(substep_handler)
-
-
-    # Configure version resolve logging
-    version_resolve_logger = logging.getLogger('version_resolve')
-    version_resolve_logger.setLevel(logging.INFO)
-    version_resolve_handler = logging.FileHandler(r'logs/version_resolve.log', encoding='utf-8')
-    version_resolve_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    version_resolve_logger.addHandler(version_resolve_handler)
-
-    # Configure npm logging
-    npm_logger = logging.getLogger('npm')
-    npm_logger.setLevel(logging.INFO)
-    npm_handler = logging.FileHandler(r'logs/npm.log', encoding='utf-8')
-    npm_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    npm_logger.addHandler(npm_handler)
-
-    # Configure maven logging
-    maven_logger = logging.getLogger('maven_utils')
-    maven_logger.setLevel(logging.INFO)
-    maven_handler = logging.FileHandler(r'logs/maven.log', encoding='utf-8')
-    maven_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    maven_logger.addHandler(maven_handler)
-
+    # 各专用日志（写入独立文件；幂等绑定）
+    url_logger = _ensure_file_logger('url_construction', r'logs/url_construction.log')
+    llm_logger = _ensure_file_logger('llm_interaction', r'logs/llm_interaction.log')
+    substep_logger = _ensure_file_logger('substep', r'logs/substep.log')
+    version_resolve_logger = _ensure_file_logger('version_resolve', r'logs/version_resolve.log')
+    npm_logger = _ensure_file_logger('npm', r'logs/npm.log')
+    maven_logger = _ensure_file_logger('maven_utils', r'logs/maven.log')
 
     return {
         "main": logger,
