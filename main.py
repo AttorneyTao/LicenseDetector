@@ -346,31 +346,111 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
     ordered_results = [results[i] for i in range(len(df)) if i in results]
     return ordered_results
 
+async def process_all_fonts(api, df, max_concurrency=MAX_CONCURRENCY):
+    """字体输入流程：按来源站点路由到对应的 handler 并发处理。
+
+    复用 process_all_repos 的并发 / 临时落盘结构，但每行委托给
+    core.font_utils.process_font_entry 做站点路由（github 来源复用既有流程）。
+    """
+    from core.font_utils import process_font_entry, classify_font_source
+
+    logger = logging.getLogger('main')
+    sem = asyncio.Semaphore(max_concurrency)
+    results = {}
+    last_save_time = time.time()
+    SAVE_INTERVAL = 30
+
+    # 启动时打印字体来源站点分布，便于确认路由覆盖情况
+    try:
+        cat_counts = df["github_url"].apply(classify_font_source).value_counts().to_dict()
+        logger.info(f"[FONT] 来源类别分布: {cat_counts}")
+    except Exception as e:
+        logger.warning(f"[FONT] 统计来源分布失败: {e}")
+
+    async def save_temp_results():
+        try:
+            current_results = [results[i] for i in range(len(df)) if i in results]
+            temp_df = pd.DataFrame(current_results)
+            os.makedirs("temp", exist_ok=True)
+            temp_df.to_csv("temp/temp_results_latest.csv", index=False, encoding='utf-8')
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            temp_df.to_csv(f"temp/temp_results_{timestamp}.csv", index=False, encoding='utf-8')
+            logger.info(f"[FONT] 已保存中间结果，完成度: {len(current_results)}/{len(df)}")
+        except Exception as e:
+            logger.error(f"[FONT] 保存临时文件失败: {str(e)}", exc_info=True)
+
+    async def sem_task(row, index, pbar):
+        nonlocal last_save_time
+        async with sem:
+            name = row.get("name", None)
+            url = row.get("github_url")
+            version = row.get("version")
+            try:
+                result = await process_font_entry(api, name, version, url)
+                results[index] = result
+            except Exception as e:
+                logger.error(f"[FONT] 处理失败 {url}: {e}", exc_info=True)
+                results[index] = {
+                    "input_url": url,
+                    "status": "error",
+                    "error": str(e),
+                    "input_name": name,
+                }
+            finally:
+                pbar.update(1)
+                current_time = time.time()
+                if current_time - last_save_time >= SAVE_INTERVAL:
+                    await save_temp_results()
+                    last_save_time = current_time
+
+    logger.info(f"[FONT] 并发任务数上限: {max_concurrency}")
+    try:
+        with tqdm(total=len(df), desc="字体处理进度") as pbar:
+            tasks = [sem_task(row, idx, pbar) for idx, row in df.iterrows()]
+            await asyncio.gather(*tasks)
+    except Exception as e:
+        logger.error(f"[FONT] 处理过程中发生错误: {str(e)}", exc_info=True)
+        await save_temp_results()
+        raise
+    finally:
+        await save_temp_results()
+
+    return [results[i] for i in range(len(df)) if i in results]
+
+
 async def initialize_api():
     """异步初始化 API 客户端"""
     api = GitHubAPI()
     await api.initialize()
     return api
 
-async def main_async():
-    """异步主函数"""
+async def main_async(font_mode: bool = False):
+    """异步主函数
+
+    Args:
+        font_mode: True 时走字体输入流程 (process_all_fonts)，否则走默认软件包流程。
+    """
     load_dotenv(".env")
     loggers = setup_logging()
     logger = loggers["main"]
-    
+
     try:
         # 初始化 GitHub API
         logger.info("Step 1: Initializing GitHub API client")
         api = await initialize_api()
         logger.info("GitHub API client initialized successfully")
-        
+
         # 读取输入文件
         logger.info("Step 2: Reading input Excel file")
         df = pd.read_excel("input.xlsx")
         logger.info(f"Read {len(df)} rows from input file")
-        
+
         # 并发处理仓库
-        results = await process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY)
+        if font_mode:
+            logger.info("启用字体输入流程 (--font)")
+            results = await process_all_fonts(api, df, max_concurrency=MAX_CONCURRENCY)
+        else:
+            results = await process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY)
         
         # 处理结果输出
         output_df = pd.DataFrame(results)
@@ -470,13 +550,21 @@ def main():
 
   # 运行API服务并指定端口
   python main.py --api --port 8080
+
+  # 运行字体输入流程（input.xlsx 全部为字体时）
+  python main.py --font
         '''
     )
-    
+
     parser.add_argument(
         '--api',
         action='store_true',
         help='启动API服务而不是CLI模式'
+    )
+    parser.add_argument(
+        '--font',
+        action='store_true',
+        help='启用字体输入流程（按字体来源站点路由处理，github 来源复用既有流程）'
     )
     parser.add_argument(
         '--host',
@@ -500,8 +588,9 @@ def main():
             run_api_server(host=args.host, port=args.port)
         else:
             # 运行CLI模式
-            logger.info("启动CLI分析模式")
-            asyncio.run(main_async())
+            mode_desc = "字体输入" if args.font else "软件包"
+            logger.info(f"启动CLI分析模式（{mode_desc}）")
+            asyncio.run(main_async(font_mode=args.font))
     except Exception as e:
         logger.error(f"Failed to run: {str(e)}", exc_info=True)
         sys.exit(1)
