@@ -1,5 +1,23 @@
 基于用户要求，项目成功添加API功能，同时保持原有程序入口（uv run main.py）不变。
 
+---
+
+## 🆕 字体扫描模式（Font Scanning）
+
+新增 `--font` 启动参数，用于处理「全部为字体」的 `input.xlsx`，按字体来源站点自动获取
+授权(license)与版权(copyright)信息。详见 [FONT_SCANNING.md](FONT_SCANNING.md)。
+
+- **启动方式**：`python main.py --font`（默认软件包模式与 API 模式不受影响）
+- **站点路由**：github（复用既有流程）/ google_fonts（读 google/fonts 真实 LICENSE，不假定 OFL）
+  / fontshare（按官方 API 的 `license_type` 区分 ITF-FFL 与 OFL）/ maoken（猫啃网）/ 长尾站点通用爬虫
+- **Token 控制**：绝不把整页丢给 LLM，仅把授权/版权相关小片段（≤1800 字符）交给 LLM；
+  github/google_fonts/fontshare 全程不调用 LLM
+- **新增文件**：[`core/font_utils.py`](../core/font_utils.py)（站点适配器与分发器）、
+  [`test/test_font_adapters.py`](../test/test_font_adapters.py)（分层抽样集成测试 + 报告）
+- **改动文件**：`main.py`（`--font` 参数 + `process_all_fonts` 并发流程）
+
+---
+
 ## 📋 项目改动总结
 
 ### ✅ 完成的功能

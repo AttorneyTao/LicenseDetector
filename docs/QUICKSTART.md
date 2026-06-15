@@ -19,6 +19,9 @@ python main.py
 3. 输出文件自动保存到 `outputs/` 目录
 4. 检查 `logs/` 目录了解执行详情
 
+> **字体扫描模式**：当 `input.xlsx` 全部为字体时，使用 `python main.py --font`
+> 按字体来源站点获取授权与版权，详见 [FONT_SCANNING.md](FONT_SCANNING.md)。
+
 ---
 
 ## 新增功能 - API 服务

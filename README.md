@@ -10,6 +10,7 @@
 - **第三方组件分析**: 发现和定位第三方依赖许可证信息
 - **版权声明提取**: 自动提取或构造版权声明
 - **多URL支持**: 处理GitHub URL和包管理器URL（npm、PyPI、NuGet、Go模块）
+- **字体扫描模式**: 通过 `--font` 启动，按字体来源站点（GitHub / Google Fonts / Fontshare / 猫啃网 / 微信公众号等）获取授权与版权，详见 [docs/FONT_SCANNING.md](docs/FONT_SCANNING.md)
 - **版本解析**: 支持特定版本分析和默认分支回退
 - **冲突检测**: 识别README与License文件中的许可证不一致
 
@@ -116,9 +117,15 @@ python main.py --api --port 8080
 **方式二：命令行**
 
 ```bash
-# 直接处理 input.xlsx，结果保存到 outputs/ 目录
+# 直接处理 input.xlsx（软件包模式），结果保存到 outputs/ 目录
 python main.py
+
+# 字体扫描模式：当 input.xlsx 全部为字体时使用
+python main.py --font
 ```
+
+> 字体扫描模式按字体来源站点（GitHub / Google Fonts / Fontshare / 猫啃网 / 微信公众号 等）
+> 自动获取授权与版权信息，详见 [docs/FONT_SCANNING.md](docs/FONT_SCANNING.md)。
 
 **方式三：Docker**
 
@@ -311,6 +318,19 @@ A: 在 `.env` 文件中设置 `USE_LLM=false`。
 
 ### Q: 如何处理大型仓库？
 A: 系统支持并发处理和进度追踪，大型仓库会需要更长时间。
+
+## 📚 完整文档
+
+更多文档见 [`docs/`](docs/README.md) 目录：
+
+| 文档 | 内容 |
+|------|------|
+| [docs/QUICKSTART.md](docs/QUICKSTART.md) | 快速入门（CLI / API、邮箱配置、故障排除） |
+| [docs/FONT_SCANNING.md](docs/FONT_SCANNING.md) | 字体扫描模式（`--font`） |
+| [docs/API_USAGE.md](docs/API_USAGE.md) | API 使用指南 |
+| [docs/DOCKER.md](docs/DOCKER.md) | Docker 容器化与部署 |
+| [docs/CRATE_IO_INTEGRATION.md](docs/CRATE_IO_INTEGRATION.md) | Rust crates.io 集成 |
+| [docs/CHANGES.md](docs/CHANGES.md) | 变更记录 |
 
 ## 贡献指南
 

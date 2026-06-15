@@ -57,3 +57,7 @@ examples/
 temp/
 outputs/
 .claude/worktrees/
+
+# Font adapter test data & results (samples + generated reports)
+test/fixtures/
+test/font_report/
