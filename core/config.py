@@ -10,7 +10,7 @@ LLM_CONFIG = {
     
     "gemini": {
         "api_key": os.getenv("GEMINI_API_KEY"),
-        "model": "gemini-3-flash-preview"
+        "model": "gemini-3.5-flash"
     },
     
     "qwen": {

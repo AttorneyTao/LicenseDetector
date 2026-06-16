@@ -205,3 +205,38 @@ license_priority_selector: |
   - Consider both the file path and filename in your analysis
   - Prefer root-level files over subdirectory files
   - Prefer standard naming conventions (LICENSE, COPYING, etc.)
+
+font_license_priority_selector: |
+  You are a license file selector for a FONT project. A repository may contain several
+  license files, but you must pick the ONE that governs the FONT itself (the typeface /
+  font software that is being distributed), NOT the license of build tools, scripts,
+  example code, or bundled dependencies.
+
+  FONT-SPECIFIC SELECTION RULES (in priority order):
+  1. Prefer the license that applies to the font/typeface. Open-source fonts are almost
+     always under the SIL Open Font License — files named "OFL.txt", "OFL", "OFL-1.1.txt",
+     or a root "LICENSE"/"LICENSE.txt"/"COPYING" that contains the font's terms are the
+     strongest candidates.
+  2. Root-directory license files outrank ones inside subdirectories.
+  3. DEPRIORITIZE licenses that clearly belong to tooling/code rather than the font, e.g.
+     files under directories like "tools/", "scripts/", "build/", "src/", "node_modules/",
+     "vendor/", "third_party/", or a stand-alone MIT/Apache "LICENSE" that sits next to
+     build scripts while an OFL governs the actual font.
+  4. If both an OFL (for the font) and another license (e.g. MIT for scripts) exist, choose
+     the OFL / font license.
+
+  LICENSE FILES FOUND:
+  {license_files_info}
+
+  Pick the ONE file most likely to be the license of the distributed font.
+
+  Return the result in JSON format:
+  {{
+      "primary_license_path": "full path of the font's license file",
+      "confidence": 0.0-1.0,
+      "reasoning": "why this file governs the font (and why others were rejected)"
+  }}
+
+  IMPORTANT:
+  - Select exactly ONE file.
+  - Favor the font's own license (often OFL) over tooling/dependency licenses.

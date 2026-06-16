@@ -15,7 +15,7 @@ import httpx  # 新增：导入 httpx
 import asyncio  # 新增：导入 asyncio
 from httpx import AsyncClient
 import aiofiles
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed
@@ -40,6 +40,44 @@ with open("prompts.yaml", "r", encoding="utf-8") as f:
 
 logger = logging.getLogger('main')
 llm_logger = logging.getLogger('llm_interaction')
+
+
+def _is_retryable_request_error(exc: BaseException) -> bool:
+    """判断 GitHub API 请求异常是否值得重试。
+
+    不重试确定性的 4xx 客户端错误（如 404 未找到）；仅对限流(403/429)、
+    请求超时(408)、5xx 服务端错误以及网络层错误重试。
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if 400 <= code < 500 and code not in (403, 408, 429):
+            return False
+        return True
+    # 网络/连接/超时等错误：可重试
+    return isinstance(exc, httpx.RequestError)
+
+
+def _extract_status_code(exc: BaseException):
+    """从异常（含被 tenacity RetryError 包裹的情况）中提取 HTTP 状态码，取不到返回 None。"""
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, httpx.HTTPStatusError):
+            return cur.response.status_code
+        # tenacity RetryError 把最后一次尝试挂在 last_attempt 上
+        last_attempt = getattr(cur, "last_attempt", None)
+        if last_attempt is not None:
+            try:
+                inner = last_attempt.exception()
+                if inner is not None and id(inner) not in seen:
+                    cur = inner
+                    continue
+            except Exception:
+                pass
+        cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+    return None
+
 
 def normalize_github_url(url: str) -> str:
     """如果是 github.com/xxx/yyy 但没有协议头，自动补全为 https://github.com/xxx/yyy"""
@@ -140,19 +178,28 @@ class GitHubAPI:
             logger.debug(f"Request successful. Status code: {response.status_code}")
             return response.json()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception(lambda e: _is_retryable_request_error(e)),
+    )
     async def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict[str, Any]:
         """
-        异步请求处理，包含速率限制处理和自动重定向
+        异步请求处理，包含速率限制处理和自动重定向。
+
+        注意：明确的 4xx 客户端错误（如 404 未找到许可证）不再重试——这类错误是确定性的，
+        重试只会浪费数秒退避时间（字体仓库大量没有 GitHub 自动识别的许可证），且会把原始
+        HTTPStatusError 包成 RetryError、干扰调用方的 404 判定。仅对限流(403/429)、超时(408)、
+        5xx 与网络错误重试。
         """
         url = f"{self.BASE_URL}{endpoint}"
         logger.debug(f"Making request to: {url}")
         if params:
             logger.debug(f"Request parameters: {params}")
-        
+
         async with AsyncClient(timeout=30.0, follow_redirects=True) as client:
             response = await client.get(
-                url, 
+                url,
                 params=params,
                 headers=self.headers
             )
@@ -160,7 +207,11 @@ class GitHubAPI:
             if response.status_code in (301, 302, 307, 308):
                 logger.warning(f"Redirected ({response.status_code}) to: {response.headers.get('location')}")
             if not (200 <= response.status_code < 300):
-                logger.error(f"GitHub API request failed: {response.status_code} {response.text}")
+                # 4xx（如 404 无许可证）多为预期情况，由调用方处理，降级为 debug，避免噪声
+                if 400 <= response.status_code < 500:
+                    logger.debug(f"GitHub API client error: {response.status_code} {endpoint}")
+                else:
+                    logger.error(f"GitHub API request failed: {response.status_code} {response.text}")
                 response.raise_for_status()
             return response.json()
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
@@ -445,9 +496,10 @@ class GitHubAPI:
             params = {"ref": ref} if ref else None
             return await self._make_request(f"/repos/{owner}/{repo}/license", params=params)
         except Exception as e:
-            # 检查是否是HTTP 404错误
-            if "404" in str(e):
-                logger.warning(f"No license found for {owner}/{repo}")
+            # 404 表示该仓库没有 GitHub 自动识别的许可证，属预期情况，优雅返回 None
+            # （兼容被 tenacity RetryError 包裹或字符串中含 404 的情况）
+            if _extract_status_code(e) == 404 or "404" in str(e):
+                logger.info(f"No GitHub-detected license for {owner}/{repo}")
                 return None
             logger.error(f"Error fetching license: {str(e)}")
             raise
@@ -522,22 +574,24 @@ def find_github_url_from_package_url_sync(package_url: str) -> Optional[str]:
     return None
 
 
-async def select_primary_license_file(license_files_detailed: List[Dict[str, str]]) -> Optional[Dict[str, str]]:
+async def select_primary_license_file(license_files_detailed: List[Dict[str, str]], font_mode: bool = False) -> Optional[Dict[str, str]]:
     """
     使用LLM选择最可能的主要项目级license文件
 
     Args:
         license_files_detailed: license文件详细信息列表，每个元素包含path, filename, url, directory
+        font_mode: 字体模式。为 True 时使用字体专用提示词，优先选择「治理字体本身」的
+            许可证（通常是 OFL / 根目录 LICENSE），而非构建脚本/依赖的许可证。
 
     Returns:
         选中的主要license文件信息，如果没有或选择失败则返回None
     """
     if not license_files_detailed:
         return None
-    
+
     if len(license_files_detailed) == 1:
         return license_files_detailed[0]
-    
+
     if not USE_LLM:
         logger.info("LLM is disabled, using first license file as fallback")
         return license_files_detailed[0]
@@ -558,8 +612,9 @@ async def select_primary_license_file(license_files_detailed: List[Dict[str, str
         license_info_text.append(info_line)
     
     license_files_info = "\n".join(license_info_text)
-    
-    prompt = PROMPTS["license_priority_selector"].format(license_files_info=license_files_info)
+
+    prompt_key = "font_license_priority_selector" if font_mode else "license_priority_selector"
+    prompt = PROMPTS[prompt_key].format(license_files_info=license_files_info)
     
     llm_logger.info("License Priority Selection Request:")
     llm_logger.info(f"Prompt: {prompt}")
@@ -1051,7 +1106,8 @@ async def process_github_repository(
     github_url: str,
     version: Optional[str],
     license_keywords: List[str] = ["license", "licenses", "copying", "notice"],
-    name: Optional[str] = None
+    name: Optional[str] = None,
+    font_mode: bool = False
 ) -> Dict[str, Any]:
     """
     Processes a GitHub repository to extract license information.
@@ -1336,7 +1392,7 @@ async def process_github_repository(
         
         if license_files_detailed:
             # 使用LLM选择主要的license文件
-            selected_license_file = await select_primary_license_file(license_files_detailed)
+            selected_license_file = await select_primary_license_file(license_files_detailed, font_mode=font_mode)
             
             if selected_license_file:
                 substep_logger.info(f"Selected primary license file: {selected_license_file['path']}")
@@ -1423,7 +1479,7 @@ async def process_github_repository(
 
             if license_files_detailed:
                 # 使用LLM选择主要的license文件
-                selected_license_file = await select_primary_license_file(license_files_detailed)
+                selected_license_file = await select_primary_license_file(license_files_detailed, font_mode=font_mode)
                 
                 if selected_license_file:
                     substep_logger.info(f"Selected primary license file: {selected_license_file['path']}")

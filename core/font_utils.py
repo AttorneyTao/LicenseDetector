@@ -479,6 +479,39 @@ async def process_generic_crawl_llm(name, version, url) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# GitHub README 自定义字体授权兜底
+# ---------------------------------------------------------------------------
+async def _github_readme_font_license(api, url: str, name) -> Optional[Dict[str, Any]]:
+    """当 GitHub 仓库无标准许可证时，抓取 README 用字体专用提示词抽取自定义授权。"""
+    import base64
+    parts = urlparse(str(url)).path.strip("/").split("/")
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1]
+    try:
+        meta = await api._make_request(f"/repos/{owner}/{repo}/readme")
+    except Exception as e:
+        logger.info(f"获取 README 失败 {owner}/{repo}: {type(e).__name__}")
+        return None
+
+    content = meta.get("content", "") or ""
+    try:
+        if meta.get("encoding") == "base64":
+            content = base64.b64decode(content).decode("utf-8", "ignore")
+    except Exception:
+        return None
+    if not content.strip():
+        return None
+
+    snippet = extract_license_snippet(content)
+    if not snippet.strip():
+        return None
+    extracted = await _llm_extract_license(name, url, snippet)
+    extracted["readme_url"] = meta.get("html_url") or f"https://github.com/{owner}/{repo}#readme"
+    return extracted
+
+
+# ---------------------------------------------------------------------------
 # 分发器
 # ---------------------------------------------------------------------------
 async def process_font_entry(
@@ -500,11 +533,31 @@ async def process_font_entry(
     try:
         if category == "github":
             from core.github_utils import process_github_repository, normalize_github_url
+            # font_mode=True：多 license 文件时优先选治理字体本身的许可证（通常 OFL）
             result = await process_github_repository(
-                api, normalize_github_url(url), version, name=name
+                api, normalize_github_url(url), version, name=name, font_mode=True
             )
             result["input_name"] = name
             result["input_url"] = url
+            # 兜底：标准 SPDX 分析没识别出授权，但 README 里可能写了自定义字体授权
+            # （CJK 免费字体常把「免费商用」等条款写在 README，而非标准 LICENSE 文件）
+            if not result.get("license_type") and not result.get("license_file_license"):
+                fb = await _github_readme_font_license(api, url, name)
+                if fb and fb.get("license_type") and fb.get("license_type") != "未知":
+                    result["license_type"] = fb.get("license_type")
+                    result["license_file_license"] = fb.get("license_type")
+                    if not result.get("copyright_notice"):
+                        result["copyright_notice"] = fb.get("copyright_notice")
+                    if not result.get("license_files"):
+                        result["license_files"] = fb.get("readme_url")
+                    analysis = result.get("license_analysis")
+                    if not isinstance(analysis, dict):
+                        analysis = {}
+                    analysis["license_determination_reason"] = (
+                        "标准 SPDX 未识别，依据 README 自定义字体授权抽取：" + (fb.get("reason") or "")
+                    )
+                    analysis["license_source"] = "github_readme_font_llm"
+                    result["license_analysis"] = analysis
             return result
 
         if category == "google_fonts":
