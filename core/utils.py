@@ -392,7 +392,7 @@ def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[s
     return results
 
 
-def find_license_files_detailed(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[Dict[str, str]]:
+def find_license_files_detailed(path_map: Dict[str, Any], sub_path: str, keywords: List[str], include_all_dirs: bool = False) -> List[Dict[str, str]]:
     """
     Finds license files in a repository tree and returns detailed information.
 
@@ -452,7 +452,7 @@ def find_license_files_detailed(path_map: Dict[str, Any], sub_path: str, keyword
         if base_path:
             if not (path == base_path or path.startswith(base_path + "/")):
                 continue
-        else:
+        elif not include_all_dirs:
             # Root-level search: only include files at root or in allowed top-level dirs
             _ALLOWED_TOP_DIRS = {"license", "licenses", "doc", "docs"}
             top_dir = path.split("/")[0] if "/" in path else ""

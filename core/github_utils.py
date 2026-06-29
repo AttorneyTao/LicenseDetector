@@ -696,6 +696,81 @@ async def select_primary_license_file(license_files_detailed: List[Dict[str, str
     return license_files_detailed[0]
 
 
+async def locate_component_license_dir(
+    name: str,
+    version: Optional[str],
+    candidate_dirs: List[Dict[str, Any]],
+    font_mode: bool = False,
+) -> Optional[str]:
+    """
+    给定组件名和一组「各自包含 license 文件的子目录」，用 LLM 判断哪个子目录的
+    license 治理该组件。用于替代脆弱的「目录尾段 == 组件名」精确匹配，使其能适配
+    任意仓库组织形式（packages/<name>、packages/@scope/<name>、libs/<name> 等）。
+
+    护栏：
+    - 仅在存在候选子目录时调用；无候选直接返回 None。
+    - LLM 返回的目录必须命中真实候选集合，否则忽略（防幻觉路径）。
+    - 允许 LLM 返回 null/none/root 表示「无子目录匹配」，由调用方回落到仓库级 license。
+
+    Returns:
+        命中的子目录路径；若无明确匹配则返回 None。
+    """
+    if not candidate_dirs:
+        return None
+    if not USE_LLM:
+        return None
+
+    lines = []
+    for i, c in enumerate(candidate_dirs, 1):
+        files = ", ".join(c["filenames"])
+        lines.append(f"{i}. Directory: {c['directory']} | License files: {files}")
+    candidate_text = "\n".join(lines)
+
+    prompt = PROMPTS["component_license_locator"].format(
+        component_name=name,
+        component_version=version or "unknown",
+        candidate_dirs=candidate_text,
+    )
+
+    llm_logger.info("Component License Locator Request:")
+    llm_logger.info(f"Prompt: {prompt}")
+
+    try:
+        provider = get_llm_provider()
+        response = provider.generate(prompt)
+
+        llm_logger.info("Component License Locator Response:")
+        llm_logger.info(f"Response: {response}")
+
+        if response:
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                chosen = result.get("license_directory")
+                confidence = result.get("confidence", 0.0)
+                reasoning = result.get("reasoning", "")
+
+                llm_logger.info(f"Located component license dir: {chosen} (confidence {confidence})")
+                llm_logger.info(f"Reasoning: {reasoning}")
+
+                if chosen is None or str(chosen).strip().lower() in ("", "none", "null", "root"):
+                    return None
+
+                valid_dirs = {c["directory"] for c in candidate_dirs}
+                if chosen in valid_dirs:
+                    return chosen
+                logger.warning(f"LLM-chosen license dir '{chosen}' not in candidate set, ignoring")
+            else:
+                llm_logger.warning("No JSON found in component license locator response")
+    except Exception as e:
+        if "This event loop is already running" in str(e):
+            llm_logger.warning("Event loop conflict detected in component license locator")
+        else:
+            llm_logger.error(f"Failed to locate component license dir: {str(e)}", exc_info=True)
+
+    return None
+
+
 async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version: Optional[str], name: Optional[str] = None) -> Tuple[str, bool]:
     """
     First try text matching, fallback to Gemini LLM if no match.
@@ -1410,21 +1485,50 @@ async def process_github_repository(
         license_files_detailed = find_license_files_detailed(path_map, sub_path, license_keywords)
         substep_logger.info(f"Found {len(license_files_detailed)} license files in subpath")
 
-        # Step 9.5: For root-level URLs with a known name, also search any subdir
-        # at any depth whose last path segment matches the name (e.g. pkgs/timing for name=timing)
+        # Step 9.5: For root-level URLs with a known component name, locate the subdir
+        # whose license governs THIS component. Repos organize per-component licenses in
+        # arbitrary ways (packages/<name>, packages/@scope/<name>, libs/<name>, ...), so we
+        # let the LLM match the component name against the candidate subdirs semantically
+        # instead of relying on an exact "last path segment == name" rule. Guardrails: only
+        # runs for root-level URLs with a name, the LLM may decline (→ fall back to root),
+        # and its choice is validated against the real candidate dirs (no hallucinated paths).
         if not sub_path and name:
-            name_lower = name.lower()
-            matching_dirs = [
-                item["path"] for item in tree
-                if item.get("type") == "tree"
-                and item["path"].split("/")[-1].lower() == name_lower
-            ]
-            for dir_path in matching_dirs:
-                substep_logger.info(f"Step 9.5: Searching name-matching subdir: {dir_path}")
-                subdir_files = find_license_files_detailed(path_map, dir_path, license_keywords)
-                license_files_detailed.extend(subdir_files)
-            if matching_dirs:
-                substep_logger.info(f"After name-matching subdir search: {len(license_files_detailed)} license files total")
+            # Gather every license file across the whole tree, then keep the subdir ones as
+            # candidates (root-level matches were already collected in Step 9).
+            all_license_files = find_license_files_detailed(
+                path_map, "", license_keywords, include_all_dirs=True
+            )
+            root_paths = {f["path"] for f in license_files_detailed}
+            dir_to_files: Dict[str, List[Dict[str, str]]] = {}
+            for f in all_license_files:
+                if f["directory"] and f["path"] not in root_paths:
+                    dir_to_files.setdefault(f["directory"], []).append(f)
+
+            if dir_to_files:
+                candidate_dirs = [
+                    {"directory": d, "filenames": [f["filename"] for f in files]}
+                    for d, files in dir_to_files.items()
+                ]
+                chosen_dir = None
+                if USE_LLM:
+                    chosen_dir = await locate_component_license_dir(
+                        name, version, candidate_dirs, font_mode=font_mode
+                    )
+                else:
+                    # No LLM available: fall back to the high-precision exact-match heuristic
+                    # (directory's last segment equals the component name).
+                    name_lower = name.lower()
+                    for d in dir_to_files:
+                        if d.split("/")[-1].lower() == name_lower:
+                            chosen_dir = d
+                            break
+
+                if chosen_dir:
+                    substep_logger.info(f"Step 9.5: Component license dir located: {chosen_dir}")
+                    license_files_detailed.extend(dir_to_files[chosen_dir])
+                    substep_logger.info(f"After component-license-dir search: {len(license_files_detailed)} license files total")
+                else:
+                    substep_logger.info("Step 9.5: No subdir matched this component; using root/repo-level license")
 
         # Step 10: Get license content for copyright analysis with intelligent selection
         substep_logger.info("Step 10/15: Getting license content for copyright analysis")

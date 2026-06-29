@@ -206,6 +206,48 @@ license_priority_selector: |
   - Prefer root-level files over subdirectory files
   - Prefer standard naming conventions (LICENSE, COPYING, etc.)
 
+component_license_locator: |
+  You are analyzing a monorepo / multi-package repository to find the license that
+  governs ONE specific component (package), not the whole repository.
+
+  The repository contains several subdirectories that each ship their own license
+  file. Repositories organize these subdirectories in many different ways, for
+  example: "packages/<name>", "packages/@scope/<name>", "libs/<name>",
+  "modules/<name>/v2", "src/<name>", etc. You must reason about which subdirectory
+  corresponds to the target component by matching the component name against the
+  directory paths.
+
+  TARGET COMPONENT:
+  - name: {component_name}
+  - version: {component_version}
+
+  Notes on the component name:
+  - It may include a package scope/prefix (e.g. "@scope/foo"). The matching
+    subdirectory is often named just "foo", or "@scope/foo", or "scope-foo".
+  - Match on meaning, not exact string equality. "@dicebear/avataaars" should match
+    a directory path ending in ".../@dicebear/avataaars" or ".../avataaars".
+
+  CANDIDATE SUBDIRECTORIES (each contains license file(s)):
+  {candidate_dirs}
+
+  Decide which ONE candidate subdirectory holds the license that governs the target
+  component. If NONE of the candidates clearly corresponds to this component (i.e.
+  the component is the repository as a whole, or no directory matches the name),
+  return null so the caller falls back to the repository-level license. When in
+  doubt, prefer null over guessing — do not force a match.
+
+  Return the result in JSON format:
+  {{
+      "license_directory": "exact directory path of the matching candidate, or null",
+      "confidence": 0.0-1.0,
+      "reasoning": "why this directory matches the component, or why none does"
+  }}
+
+  IMPORTANT:
+  - "license_directory" MUST be copied verbatim from one of the candidate directory
+    paths above, or be null. Never invent a path.
+  - Only choose a directory when the component name clearly maps to it.
+
 font_license_priority_selector: |
   You are a license file selector for a FONT project. A repository may contain several
   license files, but you must pick the ONE that governs the FONT itself (the typeface /
