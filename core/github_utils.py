@@ -2,7 +2,7 @@
 from datetime import datetime
 import os
 import logging
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import requests
 import time
 from typing import Optional, Tuple, List, Dict, Any
@@ -404,6 +404,27 @@ class GitHubAPI:
             page += 1
         return tags
 
+    async def get_tag_ref(self, owner: str, repo: str, tag: str) -> Optional[Dict[str, Any]]:
+        """
+        精确查询单个 tag 的 ref（GET /repos/{owner}/{repo}/git/ref/tags/{tag}）。
+
+        用于在不分页拉取全部 tag 的前提下做精确版本命中，避免在 tag 数巨大的仓库
+        （如 tencentcloud/tencentcloud-sdk-go，3 万多个 tag）上翻完全部分页导致卡死。
+
+        命中返回 ref 对象（dict，含 'ref' 字段）；未找到(404)、前缀匹配(返回 list)
+        或任何其他错误一律返回 None，由调用方回退到全量分页逻辑。
+        """
+        endpoint = f"/repos/{owner}/{repo}/git/ref/tags/{quote(tag, safe='')}"
+        try:
+            result = await self._make_request(endpoint)
+        except Exception as e:
+            logger.debug(f"Exact tag ref lookup miss for {owner}/{repo}@{tag}: {e}")
+            return None
+        # 精确命中返回 dict（含 'ref'）；前缀匹配时 API 返回 list，视为非精确命中
+        if isinstance(result, dict) and result.get("ref"):
+            return result
+        return None
+
     def get_tree_sync(self, owner: str, repo: str, sha: str) -> Dict:
         """
         Retrieves the complete repository tree structure.
@@ -704,6 +725,27 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
             sha = match.group(2)[:7]  # 取 commit 哈希前 7 位
             version_resolve_logger.info(f"Version {version} detected as Go pseudo-version, extracted SHA: {sha}")
             return sha, False
+
+    # 快速路径：先用精确 tag ref 查询命中，避免在 tag 数巨大的仓库上分页拉取全部 tag 导致卡死。
+    # 仅在指定了 version 时尝试；命中则直接返回，未命中则回退到下方的全量分页逻辑。
+    if version:
+        version_str = str(version).strip()
+        version_no_v = version_str.lstrip("vV")
+        # 候选 tag 名（保序去重）：原样、加 v 前缀、去 v 前缀
+        exact_candidates: List[str] = []
+        for cand in (version_str, f"v{version_no_v}", version_no_v):
+            if cand and cand not in exact_candidates:
+                exact_candidates.append(cand)
+        for cand in exact_candidates:
+            ref = await api.get_tag_ref(owner, repo, cand)
+            if ref:
+                version_resolve_logger.info(
+                    f"Found exact tag via git ref (fast path): {cand} for requested {version}"
+                )
+                return cand, False
+        version_resolve_logger.info(
+            f"Exact tag ref fast path missed for {version}, falling back to full tag pagination"
+        )
 
     # Get default branch
     repo_info = await api.get_repo_info(owner, repo)  # 添加 await
