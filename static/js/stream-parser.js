@@ -11,7 +11,10 @@ const StreamParser = {
 
         let type = 'unknown';
 
-        if (/\[START\]/i.test(trimmed) || /开始处理|开始分析|API启动/.test(trimmed)) {
+        if (/\[DOWNLOAD_PROGRESS\]/i.test(trimmed)) {
+            // 归档下载进度：单独归类为 progress，不参与总体进度条计算
+            type = 'progress';
+        } else if (/\[START\]/i.test(trimmed) || /开始处理|开始分析|API启动/.test(trimmed)) {
             type = 'start';
         } else if (/\[SUCCESS\]/i.test(trimmed) || /成功|完成/.test(trimmed)) {
             type = 'success';
@@ -35,6 +38,9 @@ const StreamParser = {
      * Returns { current, total, percent } or null
      */
     extractProgress(line) {
+        // 归档下载进度是单个文件的下载百分比，不代表整体分析进度
+        if (/\[DOWNLOAD_PROGRESS\]/i.test(line)) return null;
+
         // Match: [PROGRESS] 已完成 X/Y (Z.Z%)
         const match = line.match(/已完成\s*(\d+)\s*\/\s*(\d+)\s*\((\d+\.?\d*)%\)/);
         if (match) {
