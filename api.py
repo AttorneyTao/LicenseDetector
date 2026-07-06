@@ -30,6 +30,7 @@ from core.go_utils import get_github_url_from_pkggo
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.maven_utils import analyze_maven_repository_url
+from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 
 import pandas as pd
 from tqdm import tqdm
@@ -120,7 +121,7 @@ broadcaster = _Broadcaster()
 
 def _classify_log_type(msg: str) -> str:
     """Mirror the classification logic in stream-parser.js."""
-    if "[PROGRESS]" in msg or "已完成" in msg:
+    if "[PROGRESS]" in msg or "[DOWNLOAD_PROGRESS]" in msg or "已完成" in msg:
         return "progress"
     if "[SUCCESS]" in msg or "成功" in msg or "完成" in msg:
         return "success"
@@ -1128,11 +1129,26 @@ async def _process_repositories(api, df, log_queue=None):
                                         pass
                     else:
                         result = await process_github_repository(api, url, version, name=name)
-                
+
+                # 归档下载兜底：所有路径都未获取到 license 信息，且 URL 是
+                # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
+                if is_direct_archive_url(url) and (
+                    result.get("status") != "success" or not result.get("license_type")
+                ):
+                    logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
+                    if log_queue:
+                        try:
+                            log_queue.put_nowait(f"[INFO] 现有流程未获取到 license，尝试归档下载兜底分析: {url}")
+                        except:
+                            pass
+                    archive_result = await process_direct_archive_url(url, version, name, log_queue=log_queue)
+                    if archive_result:
+                        result = archive_result
+
                 result["input_name"] = name
                 result["input_url"] = original_url
                 results[index] = result
-                
+
             except Exception as e:
                 logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
                 if log_queue:
@@ -1140,12 +1156,27 @@ async def _process_repositories(api, df, log_queue=None):
                         log_queue.put_nowait(f"[ERROR] 处理失败 {row.get('github_url')}: {e}")
                     except:
                         pass
-                results[index] = {
-                    "input_url": row.get("github_url"),
-                    "status": "error",
-                    "error": str(e),
-                    "input_name": name
-                }
+                # 异常场景同样尝试归档下载兜底
+                fallback_result = None
+                fallback_url = normalize_github_url(row.get("github_url"))
+                if is_direct_archive_url(fallback_url):
+                    try:
+                        fallback_result = await process_direct_archive_url(
+                            fallback_url, row.get("version"), name, log_queue=log_queue
+                        )
+                    except Exception as e2:
+                        logger.warning(f"归档兜底分析也失败 {fallback_url}: {e2}")
+                if fallback_result:
+                    fallback_result["input_name"] = name
+                    fallback_result["input_url"] = row.get("github_url")
+                    results[index] = fallback_result
+                else:
+                    results[index] = {
+                        "input_url": row.get("github_url"),
+                        "status": "error",
+                        "error": str(e),
+                        "input_name": name
+                    }
             finally:
                 # 更新进度计数：每完成一个就上报，保证前端进度条平滑准确
                 async with lock:

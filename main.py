@@ -42,12 +42,13 @@ from core.utils import get_concluded_license, extract_thirdparty_dirs_column, ge
 from core.go_utils import  get_github_url_from_pkggo
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import process_crate_repository
+from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 
 # ============================================================================
 # Load Prompts Section
 import yaml
 
-from core.github_utils import process_github_repository
+from core.github_utils import process_github_repository, normalize_github_url
 with open("prompts.yaml", "r", encoding="utf-8") as f:
     PROMPTS = yaml.safe_load(f)
 
@@ -300,18 +301,43 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                 version,
                                 name=name
                             )
+                    # 归档下载兜底：所有路径都未获取到 license 信息，且 URL 是
+                    # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
+                    if is_direct_archive_url(url) and (
+                        result.get("status") != "success" or not result.get("license_type")
+                    ):
+                        logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
+                        archive_result = await process_direct_archive_url(url, version, name)
+                        if archive_result:
+                            result = archive_result
+
                     # 新增：保留 input_name 字段
                     result["input_name"] = name
                     result["input_url"] = original_url  # 确保始终使用原始URL
                     results[index] = result
                 except Exception as e:
                     logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
-                    results[index] = {
-                        "input_url": row.get("github_url"), 
-                        "status": "error", 
-                        "error": str(e),
-                        "input_name": name  # 错误时也保留 input_name
-                    }
+                    # 异常场景同样尝试归档下载兜底
+                    fallback_result = None
+                    fallback_url = normalize_github_url(row.get("github_url"))
+                    if is_direct_archive_url(fallback_url):
+                        try:
+                            fallback_result = await process_direct_archive_url(
+                                fallback_url, row.get("version"), name
+                            )
+                        except Exception as e2:
+                            logger.warning(f"归档兜底分析也失败 {fallback_url}: {e2}")
+                    if fallback_result:
+                        fallback_result["input_name"] = name
+                        fallback_result["input_url"] = row.get("github_url")
+                        results[index] = fallback_result
+                    else:
+                        results[index] = {
+                            "input_url": row.get("github_url"),
+                            "status": "error",
+                            "error": str(e),
+                            "input_name": name  # 错误时也保留 input_name
+                        }
                 finally:
                     running_tasks -= 1
                     logger.info(f"任务完成，当前并发任务数: {running_tasks}")
