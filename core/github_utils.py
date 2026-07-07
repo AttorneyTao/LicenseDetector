@@ -134,6 +134,14 @@ class GitHubAPI:
             logger.error(f"Failed to connect to GitHub API: {str(e)}")
             raise
 
+    async def close(self):  # 关闭底层 HTTP session，供 API shutdown 调用
+        """释放资源：关闭 requests session"""
+        try:
+            if getattr(self, "session", None) is not None:
+                self.session.close()
+        except Exception as e:
+            logger.warning(f"关闭 GitHub API session 时出错: {e}")
+
     def _make_request_sync(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
         Makes an authenticated request to the GitHub API with rate limit handling.

@@ -23,13 +23,24 @@ jobs:
           uv sync
 
       - name: Restart service
+        # timeout guards against a hung systemd job blocking the self-hosted
+        # runner forever; fail loudly instead of hanging if restart exceeds 120s.
         run: |
-          systemctl restart licensedetector.service
+          timeout 120 systemctl restart licensedetector.service
 
       - name: Verify service is running
         run: |
-          sleep 3
-          systemctl is-active licensedetector.service
+          for i in $(seq 1 10); do
+            if systemctl is-active --quiet licensedetector.service; then
+              echo "Service is active"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Service failed to become active" >&2
+          systemctl status licensedetector.service --no-pager || true
+          journalctl -u licensedetector.service -n 40 --no-pager || true
+          exit 1
 
       - name: Notify success
         if: success()

@@ -205,7 +205,12 @@ async def shutdown_event():
     logger.info("API关闭中...")
     global _api_instance
     if _api_instance:
-        await _api_instance.close()
+        try:
+            close = getattr(_api_instance, "close", None)
+            if callable(close):
+                await close()
+        except Exception as e:
+            logger.warning(f"关闭 API 实例时出错（忽略，继续关闭）: {e}")
 
 
 @app.get("/")
