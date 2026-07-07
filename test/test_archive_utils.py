@@ -224,6 +224,9 @@ class TestProcessDirectArchiveUrl:
         assert "LICENSE" in result["license_files"]
         assert result["copyright_notice"] == "Copyright (c) 2024 Test Author"
         assert "Downloaded source archive" in result["license_determination_reason"]
+        # license 原文应完整保留在 license_text 字段
+        assert "MIT License" in result["license_text"]
+        assert "Copyright (c) 2024 Test Author" in result["license_text"]
         # 必备字段与 GitHub 流程结果兼容
         for field in ("input_url", "repo_url", "input_version", "used_default_branch",
                       "license_analysis", "has_license_conflict", "readme_license"):

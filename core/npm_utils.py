@@ -17,6 +17,7 @@ from .utils import (
     find_top_level_thirdparty_dirs_local,
     construct_copyright_notice_async,
     find_matching_version,
+    prepare_license_text,
 )
 from bs4 import BeautifulSoup
 import tempfile
@@ -719,6 +720,7 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
                     "has_license_conflict",
                     "readme_license",
                     "license_file_license",
+                    "license_text",
                 ]:
                     if github_result.get(key) is not None:
                         github_fields[key] = github_result.get(key)
@@ -815,6 +817,9 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         "readme_license": final_readme_license,
         "license_file_license": final_license_file_license,
         "copyright_notice": final_copyright_notice,
+        "license_text": prepare_license_text(
+            github_fields.get("license_text") if github_scan_success and github_fields.get("license_text") else npm_license_content
+        ),
         "status": "success",
         "license_determination_reason": (
             "Fetched from GitHub repository"

@@ -18,7 +18,7 @@ import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pypi_utils import process_pypi_repository
-from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed
+from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed, prepare_license_text
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
 from core.llm_provider import get_llm_provider
 import platform
@@ -1424,6 +1424,7 @@ async def process_github_repository(
                             "readme_license": None,
                             "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "copyright_notice": copyright_notice,
+                            "license_text": prepare_license_text(license_content),
                             "status": "success",
                             "license_determination_reason": determination_reason
                         }
@@ -1578,6 +1579,7 @@ async def process_github_repository(
                     "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                     "license_file_license": license_file_analysis_result.get("spdx_expression") or (license_file_analysis_result["licenses"][0] if license_file_analysis_result and license_file_analysis_result["licenses"] else None),
                     "copyright_notice": copyright_notice,
+                    "license_text": prepare_license_text(license_content),
                     "status": "success",
                     "license_determination_reason": determination_reason
                 }
@@ -1621,6 +1623,7 @@ async def process_github_repository(
                 "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                 "license_file_license": resolved_repo_license,
                 "copyright_notice": copyright_notice,
+                "license_text": prepare_license_text(repo_license_content or license_content),
                 "status": "success",
                 "license_determination_reason": determination_reason
             }
@@ -1680,6 +1683,7 @@ async def process_github_repository(
                             "readme_license": readme_license_analysis.get("spdx_expression") if readme_license_analysis is not None and readme_license_analysis.get("spdx_expression") else None,
                             "license_file_license": license_file_analysis.get("spdx_expression") or (license_file_analysis["licenses"][0] if license_file_analysis and license_file_analysis["licenses"] else None),
                             "copyright_notice": copyright_notice,
+                            "license_text": prepare_license_text(license_content),
                             "status": "success",
                             "license_determination_reason": determination_reason
                         }

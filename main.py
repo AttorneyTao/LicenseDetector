@@ -556,6 +556,10 @@ async def main_async(font_mode: bool = False):
         logger.info("生成 risk_level...")
         output_df["risk_level"] = output_df["concluded_license"].apply(get_risk_level)
 
+        # 确保 license_text 列始终存在（即使本批没有任何组件拿到 license 原文）
+        if "license_text" not in output_df.columns:
+            output_df["license_text"] = None
+
         # 重排列顺序
         logger.info("重排列顺序...")
         # 获取实际存在的列（配置的列和实际数据的交集）

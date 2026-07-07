@@ -15,6 +15,7 @@ from .utils import (
     extract_copyright_info_async,
     analyze_license_content_async,
     find_top_level_thirdparty_dirs_local,
+    prepare_license_text,
 )
 from bs4 import BeautifulSoup
 import tempfile
@@ -615,6 +616,7 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
                     "has_license_conflict",
                     "readme_license",
                     "license_file_license",
+                    "license_text",
                 ]:
                     if github_result.get(key) is not None:
                         github_fields[key] = github_result.get(key)
@@ -671,6 +673,9 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
         "readme_license": final_readme_license,
         "license_file_license": final_license_file_license,
         "copyright_notice": final_copyright_notice,
+        "license_text": prepare_license_text(
+            github_fields.get("license_text") if github_scan_success else None
+        ),
         "status": "success",
         "license_determination_reason": (
             "Fetched from GitHub repository"
