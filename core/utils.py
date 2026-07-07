@@ -257,6 +257,26 @@ async def analyze_license_content_async(content: str, source_url: Optional[str] 
         }
 
 
+# Excel (openpyxl) 不允许写入的控制字符
+_EXCEL_ILLEGAL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# Excel 单元格上限 32767 字符，留出截断标记的余量
+_LICENSE_TEXT_MAX_CHARS = 32000
+
+
+def prepare_license_text(content: Any) -> Optional[str]:
+    """
+    清理 license 原文用于表格输出：
+    - 去除 Excel 不允许的控制字符（否则 openpyxl 写入会报错）
+    - 超过单元格上限时截断并追加标记
+    """
+    if not content or not isinstance(content, str):
+        return None
+    cleaned = _EXCEL_ILLEGAL_CHARS_RE.sub("", content)
+    if len(cleaned) > _LICENSE_TEXT_MAX_CHARS:
+        cleaned = cleaned[:_LICENSE_TEXT_MAX_CHARS] + "\n...[TRUNCATED]"
+    return cleaned or None
+
+
 def find_license_files(path_map: Dict[str, Any], sub_path: str, keywords: List[str]) -> List[str]:
     """
     Finds license files in a repository tree.

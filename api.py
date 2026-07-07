@@ -1240,6 +1240,10 @@ def _generate_output(results):
     # Derive risk_level from the final concluded_license
     output_df["risk_level"] = output_df["concluded_license"].apply(get_risk_level)
 
+    # Ensure license_text column always exists in the output
+    if "license_text" not in output_df.columns:
+        output_df["license_text"] = None
+
     # Reorder columns
     existing_columns = [col for col in RESULT_COLUMNS_ORDER if col in output_df.columns]
     remaining_columns = [col for col in output_df.columns if col not in existing_columns]

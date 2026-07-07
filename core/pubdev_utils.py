@@ -261,7 +261,7 @@ async def process_pubdev_package(
     pubdev_info may be passed in from a prior get_github_url_from_pubdev call
     to avoid re-fetching the API metadata.
     """
-    from .utils import analyze_license_content_async, construct_copyright_notice_async
+    from .utils import analyze_license_content_async, construct_copyright_notice_async, prepare_license_text
 
     # Re-use already-fetched metadata if available
     if pubdev_info is None:
@@ -339,6 +339,7 @@ async def process_pubdev_package(
         "readme_license": None,
         "license_file_license": license_type,
         "copyright_notice": copyright_notice,
+        "license_text": prepare_license_text(license_content),
         "status": "success" if license_type else "no_license_found",
         "license_determination_reason": (
             f"pub.dev archive fallback: license extracted from {license_filename}"

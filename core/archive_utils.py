@@ -332,6 +332,7 @@ async def analyze_extracted_directory(
         find_license_files_detailed,
         find_readme,
         find_top_level_thirdparty_dirs_local,
+        prepare_license_text,
     )
     from .github_utils import select_primary_license_file
 
@@ -395,6 +396,7 @@ async def analyze_extracted_directory(
             "readme_license": None,
             "license_file_license": license_type,
             "copyright_notice": copyright_notice,
+            "license_text": prepare_license_text(license_content),
             "status": "success",
             "license_determination_reason": (
                 f"Downloaded source archive and analyzed license file: {selected_rel_path}"
