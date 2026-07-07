@@ -42,6 +42,7 @@ from core.utils import get_concluded_license, extract_thirdparty_dirs_column, ge
 from core.go_utils import  get_github_url_from_pkggo
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import process_crate_repository
+from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 
 # ============================================================================
@@ -208,7 +209,35 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         if "crates.io/crates" in url:
                             is_crate_pkg = True
 
-                    if is_go_pkg:
+                    # 新增：判断是否为 pub.dev (Dart/Flutter) 包
+                    is_pubdev_pkg = isinstance(url, str) and (
+                        url.startswith("https://pub.dev/packages/")
+                        or url.startswith("https://pub.dartlang.org/packages/")
+                    )
+
+                    if is_pubdev_pkg:
+                        # 与 api.py 保持一致：先尝试 pubspec 里的 GitHub 仓库，
+                        # 未找到匹配版本时回退至 pub.dev 压缩包分析
+                        logger.info(f"检测到 pub.dev 包 URL: {url}")
+                        pubdev_info = await get_github_url_from_pubdev(url, version, name)
+                        github_url = pubdev_info.get("github_url")
+                        github_success = False
+                        if github_url:
+                            result = await process_github_repository(
+                                api,
+                                github_url,
+                                version,
+                                name=name
+                            )
+                            github_success = (
+                                result.get("status") == "success"
+                                and not result.get("used_default_branch", True)
+                            )
+                        if not github_success:
+                            logger.info(f"GitHub 未找到匹配版本，回退至 pub.dev 压缩包分析: {url}")
+                            result = await process_pubdev_package(url, version, name, pubdev_info)
+
+                    elif is_go_pkg:
                         logger.info(f"检测到 Go 包 URL: {url}，尝试 get_github_url")
                         github_info = await get_github_url_from_pkggo(url, version, name)
                         github_url = github_info.get("github_url")
