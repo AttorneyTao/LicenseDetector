@@ -46,6 +46,16 @@ else:
 CRATES_IO_API_BASE = "https://crates.io/api/v1"
 CRATES_IO_BASE = "https://crates.io"
 
+# crates.io 的爬虫政策要求 User-Agent 能标识调用方，默认的
+# python-requests UA 会被直接 403 / 掐断连接
+# （可用环境变量 CRATES_IO_USER_AGENT 覆盖，建议带上联系方式）
+CRATES_IO_HEADERS = {
+    "User-Agent": os.getenv(
+        "CRATES_IO_USER_AGENT",
+        "Github-Repo-Analyser/1.0 (license compliance scanner; +https://github.com/AttorneyTao/LicenseDetector)",
+    )
+}
+
 USE_LLM = os.getenv("USE_LLM", "true").lower() == "true"
 
 try:
@@ -114,7 +124,7 @@ def _fetch_crate_info(crate_name: str) -> dict:
     
     try:
         crate_logger.debug("Fetching crate info from: %s", url)
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=CRATES_IO_HEADERS, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.HTTPError as e:
@@ -143,7 +153,7 @@ def _fetch_version_info(crate_name: str, version: str) -> dict:
     
     try:
         crate_logger.debug("Fetching version info from: %s", url)
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=CRATES_IO_HEADERS, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.HTTPError as e:
@@ -693,7 +703,7 @@ def _fetch_github_readme(repo_url: str, version: str, readme_path: str = "README
         
         # 尝试使用 GitHub Contents API
         readme_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{version}/{readme_path}"
-        resp = requests.get(readme_url, timeout=10)
+        resp = requests.get(readme_url, headers=CRATES_IO_HEADERS, timeout=10)
         
         if resp.status_code == 200:
             crate_logger.info("Successfully fetched README from GitHub")
@@ -710,7 +720,7 @@ def _fetch_crate_readme(crate_name: str, version: str) -> Optional[str]:
     """从 crates.io 页面获取 README 内容（如果有）。"""
     try:
         url = f"{CRATES_IO_BASE}/crates/{crate_name}/{version}"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=CRATES_IO_HEADERS, timeout=10)
         
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
@@ -731,7 +741,7 @@ def _fetch_crate_owners(crate_name: str) -> dict:
     url = f"{CRATES_IO_API_BASE}/crates/{crate_name}/owners"
     
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=CRATES_IO_HEADERS, timeout=10)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
