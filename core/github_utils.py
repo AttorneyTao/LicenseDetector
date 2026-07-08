@@ -223,51 +223,72 @@ class GitHubAPI:
                 response.raise_for_status()
             return response.json()
     async def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> Optional[str]:
-        """获取文件内容，包含超时和重试机制"""
+        """获取文件内容，包含超时和重试机制。
+
+        先走 raw.githubusercontent.com（不消耗 API 配额），失败时（该域名对未认证请求
+        按 IP 限流，代理出口常见 429）回退到带 token 的 contents API。
+        """
         max_retries = 3
         timeout = 30.0
-        
+
         for attempt in range(max_retries):
             try:
                 # 获取代理设置
                 proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
-                
+
                 # 配置超时和代理设置
                 client_kwargs = {
                     'timeout': timeout,
                     'limits': httpx.Limits(max_keepalive_connections=5, max_connections=10)
                 }
-                
-                # 如果有代理设置，添加到client配置中
+
+                # 如果有代理设置，添加到client配置中（httpx>=0.28 参数名为 proxy）
                 if proxy:
-                    client_kwargs['proxies'] = proxy
-                
+                    client_kwargs['proxy'] = proxy
+
                 async with AsyncClient(**client_kwargs) as client:
                     raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
                     logger.debug(f"Attempting to fetch: {raw_url} (attempt {attempt + 1}/{max_retries})")
-                    
-                    # 发起请求（不在get方法中传递proxies参数）
+
                     response = await client.get(raw_url)
                     response.raise_for_status()
                     return response.text
-                    
+
+            except httpx.HTTPStatusError as e:
+                # 429/403 等状态错误重试大概率无效（按 IP 限流），直接回退 contents API
+                logger.warning(f"Raw fetch failed with status {e.response.status_code} for {path}, falling back to contents API")
+                break
+
             except httpx.ConnectTimeout as e:
                 logger.warning(f"Connection timeout on attempt {attempt + 1}/{max_retries} for {path}: {str(e)}")
                 if attempt == max_retries - 1:  # 最后一次尝试
-                    logger.error(f"All {max_retries} attempts failed for {path}")
-                    return None
+                    logger.error(f"All {max_retries} raw attempts failed for {path}, falling back to contents API")
+                    break
                 # 等待后重试
                 await asyncio.sleep(2 ** attempt)  # 指数退避
-                
+
             except httpx.RequestError as e:
                 logger.warning(f"Request error on attempt {attempt + 1}/{max_retries} for {path}: {str(e)}")
                 if attempt == max_retries - 1:
-                    return None
+                    break
                 await asyncio.sleep(1)
-                
+
             except Exception as e:
                 logger.error(f"Unexpected error fetching {path}: {str(e)}")
-                return None
+                break
+
+        # 回退：带认证的 GitHub contents API（限流额度随 token，5000/h）
+        try:
+            data = await self._make_request(
+                f"/repos/{owner}/{repo}/contents/{path}", params={"ref": ref}
+            )
+            if isinstance(data, dict) and data.get("content"):
+                import base64
+                content = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+                logger.debug(f"Fetched {path} via contents API fallback")
+                return content
+        except Exception as e:
+            logger.warning(f"Contents API fallback failed for {path}: {str(e)}")
 
         return None
 
@@ -1402,9 +1423,11 @@ async def process_github_repository(
                     license_url = license_info.get("_links", {}).get("html") or license_info.get("download_url", "")
                     repo_license_content = license_content
                     license_file_analysis = await analyze_license_content_async(license_content, license_url)
-                    # For root-level URLs, return early; for subdir URLs, save result
-                    # and continue so the subdir-specific license takes priority
-                    if license_file_analysis and license_file_analysis.get("licenses") and not sub_path:
+                    # Return early only for root-level URLs WITHOUT a component name.
+                    # With a name we must fall through to Step 9.5, which may locate a
+                    # subdir license governing this specific component (monorepos); with
+                    # a sub_path the subdir-specific license likewise takes priority.
+                    if license_file_analysis and license_file_analysis.get("licenses") and not sub_path and not name:
                         determination_reason = f"License determined via GitHub API and LLM analysis"
                         copyright_notice = await construct_copyright_notice_async(
                             await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
@@ -1439,8 +1462,14 @@ async def process_github_repository(
         tree = tree_response.get("tree", []) if isinstance(tree_response, dict) else []
         substep_logger.info(f"Retrieved tree with {len(tree)} items")
 
-        # 查找 thirdparty 目录
+        # 查找 thirdparty 目录。URL 本身指向子目录时，组件只是仓库的一个包，
+        # 仓库其他位置的 vendor/thirdparty 目录与它无关，只保留该子目录内部的。
         thirdparty_dirs = find_top_level_thirdparty_dirs(tree)
+        if sub_path:
+            thirdparty_dirs = [
+                d for d in thirdparty_dirs
+                if d == sub_path or d.startswith(sub_path + "/")
+            ]
 
         if license_file_analysis is None:
             license_file_analysis = {}
@@ -1534,8 +1563,25 @@ async def process_github_repository(
 
                 if chosen_dir:
                     substep_logger.info(f"Step 9.5: Component license dir located: {chosen_dir}")
-                    license_files_detailed.extend(dir_to_files[chosen_dir])
+                    # The subdir license governs THIS component — use it instead of the
+                    # root-level files. Keeping root files in the list would let the
+                    # priority selector (which prefers root licenses) pick them again.
+                    # If fetching/analyzing the subdir file later fails, Step 13 still
+                    # falls back to the repo-level license captured in Step 5.
+                    license_files_detailed = list(dir_to_files[chosen_dir])
                     substep_logger.info(f"After component-license-dir search: {len(license_files_detailed)} license files total")
+                    # The component is just this subdir, not the whole repo — vendor/
+                    # thirdparty dirs elsewhere in the repo belong to other packages.
+                    # Re-scope to dirs inside the component dir and overwrite the
+                    # values already stamped onto the earlier analysis dicts.
+                    thirdparty_dirs = [
+                        d for d in thirdparty_dirs
+                        if d == chosen_dir or d.startswith(chosen_dir + "/")
+                    ]
+                    license_file_analysis["thirdparty_dirs"] = thirdparty_dirs
+                    if readme_license_analysis is not None:
+                        readme_license_analysis["thirdparty_dirs"] = thirdparty_dirs
+                    substep_logger.info(f"Scoped thirdparty_dirs to component dir: {thirdparty_dirs}")
                 else:
                     substep_logger.info("Step 9.5: No subdir matched this component; using root/repo-level license")
 
@@ -1560,7 +1606,8 @@ async def process_github_repository(
                 license_file_analysis_result["thirdparty_dirs"] = thirdparty_dirs
             # 只要分析有结果，直接返回
             if license_file_analysis_result and license_file_analysis_result.get("licenses"):
-                determination_reason = f"Found license files in {sub_path or 'root'}, selected primary: {selected_license_file['filename'] if selected_license_file else ''}"
+                selected_dir = (selected_license_file.get('directory') if selected_license_file else '') or sub_path or 'root'
+                determination_reason = f"Found license files in {selected_dir}, selected primary: {selected_license_file['filename'] if selected_license_file else ''}"
                 copyright_notice = await construct_copyright_notice_async(
                     await get_github_last_update_time(api, owner, repo, resolved_version), owner, repo, resolved_version, component_name,
                     None, license_content
