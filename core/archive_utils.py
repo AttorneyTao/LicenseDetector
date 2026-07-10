@@ -389,7 +389,7 @@ async def analyze_extracted_directory(
             "resolved_version": resolved_version or "",
             "used_default_branch": False,
             "component_name": component_name,
-            "license_files": f"{source_url} ({selected_rel_path})",
+            "license_files": source_url,
             "license_analysis": license_analysis,
             "license_type": license_type,
             "has_license_conflict": False,
@@ -423,7 +423,7 @@ async def analyze_extracted_directory(
                 "resolved_version": resolved_version or "",
                 "used_default_branch": False,
                 "component_name": component_name,
-                "license_files": f"{source_url} ({readme_path})",
+                "license_files": source_url,
                 "license_analysis": readme_analysis,
                 "license_type": license_type,
                 "has_license_conflict": False,
@@ -432,7 +432,7 @@ async def analyze_extracted_directory(
                 "copyright_notice": copyright_notice,
                 "status": "success",
                 "license_determination_reason": (
-                    f"Downloaded source archive; found license info in README: {readme_analysis['licenses']}"
+                    f"Downloaded source archive; found license info in README ({readme_path}): {readme_analysis['licenses']}"
                 ),
             }
 
