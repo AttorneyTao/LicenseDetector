@@ -286,6 +286,18 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             # 基础信息保持PyPI的
             final_license_type = github_result.get("license_type", license_type)
             final_license_files = github_result.get("license_files", f"https://pypi.org/project/{package_name}/{resolved_version}/#files")
+
+            # GitHub 仓库无对应版本 tag（回退到默认分支 blob 链接）时，改用 PyPI
+            # 带版本号的页面链接，保证链接与版本对应；其余字段仍以 GitHub 分析为准。
+            if github_result.get("used_default_branch"):
+                versioned_url = f"https://pypi.org/project/{package_name}/{resolved_version}/#files"
+                from core.utils import is_url_reachable
+                if await is_url_reachable(versioned_url):
+                    logger.info(
+                        "GitHub has no matching version tag, using versioned PyPI link: %s",
+                        versioned_url,
+                    )
+                    final_license_files = versioned_url
             final_license_analysis = github_result.get("license_analysis")
             final_has_license_conflict = github_result.get("has_license_conflict")
             final_readme_license = github_result.get("readme_license")

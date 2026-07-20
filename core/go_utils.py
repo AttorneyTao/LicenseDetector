@@ -15,6 +15,55 @@ if not logger.handlers:
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
+def extract_module_path(pkggo_url: str) -> Optional[str]:
+    """从 pkg.go.dev/go module 地址中提取模块路径（去协议、域名、参数、锚点）。
+
+    例如:
+        https://pkg.go.dev/go.uber.org/atomic -> go.uber.org/atomic
+        go.uber.org/atomic?tab=doc -> go.uber.org/atomic
+    """
+    import re
+    url = pkggo_url.strip()
+    url = re.sub(r"^https?://", "", url)
+    match = re.match(r"(pkg\.go\.dev/|go\.dev/)?(?P<module>[a-zA-Z0-9\.\-_\/]+)", url)
+    if not match:
+        return None
+    module_path = match.group("module")
+    return module_path.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+
+async def build_versioned_pkggo_license_url(pkggo_url: str, version: Optional[str]) -> Optional[str]:
+    """构造带版本号的 pkg.go.dev 许可证页链接，供 GitHub 无对应版本 tag 时回退使用。
+
+    版本存在性通过 proxy.golang.org 的 @v/{version}.info 接口校验（pkg.go.dev
+    的版本页即基于该 proxy 数据），依次尝试原始版本号和补 "v" 前缀的版本号。
+    校验失败或无版本号时返回 None。
+    """
+    if not version:
+        return None
+    module_path = extract_module_path(pkggo_url)
+    if not module_path:
+        return None
+
+    candidates = [version]
+    if not version.startswith("v"):
+        candidates.append(f"v{version}")
+
+    async with aiohttp.ClientSession() as session:
+        for candidate in candidates:
+            info_url = f"https://proxy.golang.org/{module_path}/@v/{candidate}.info"
+            try:
+                async with session.get(info_url) as resp:
+                    if resp.status == 200:
+                        result = f"https://pkg.go.dev/{module_path}@{candidate}?tab=licenses"
+                        logger.info(f"Go 版本 {candidate} 存在于 proxy，生成带版本链接: {result}")
+                        return result
+            except Exception as exc:
+                logger.warning(f"校验 Go 版本失败 {info_url}: {exc}")
+    logger.info(f"proxy.golang.org 未找到 {module_path} 的版本 {version}，不生成带版本链接")
+    return None
+
+
 def pkggo_to_proxy_url(pkggo_url: str) -> str:
     """
     将各种 pkg.go.dev/go module 地址（含参数、锚点、无协议等）转换为 proxy.golang.org 的元数据 API 地址

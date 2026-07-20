@@ -913,6 +913,34 @@ def find_top_level_thirdparty_dirs(tree: List[Dict]) -> List[str]:
                 thirdparty_dirs.append(path)
     return thirdparty_dirs
 
+async def is_url_reachable(url: str, timeout: float = 8.0) -> bool:
+    """检查 URL 是否可访问（2xx/3xx 视为有效）。
+
+    先发 HEAD 请求；部分站点对 HEAD 返回 403/405，此时降级为 GET 再判断。
+    任何网络异常 / 超时均视为不可访问，由调用方决定回退行为。
+    """
+    import aiohttp
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) LicenseDetector/1.0",
+    }
+    try:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=client_timeout, headers=headers) as session:
+            try:
+                async with session.head(url, allow_redirects=True) as resp:
+                    if resp.status < 400:
+                        return True
+                    if resp.status not in (403, 405):
+                        return False
+            except aiohttp.ClientError:
+                pass  # HEAD 不被支持或连接异常，降级为 GET 再试一次
+            async with session.get(url, allow_redirects=True) as resp:
+                return resp.status < 400
+    except Exception:
+        return False
+
+
 def find_top_level_thirdparty_dirs_local(root_dir: str) -> List[str]:
     """
     在本地目录下查找所有顶层第三方目录（不递归子目录）。
