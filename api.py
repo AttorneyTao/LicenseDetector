@@ -26,10 +26,10 @@ from core.config import MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_risk_level
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
-from core.go_utils import get_github_url_from_pkggo
+from core.go_utils import get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
-from core.maven_utils import analyze_maven_repository_url
+from core.maven_utils import analyze_maven_repository_url, build_versioned_maven_license_url
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 
 import pandas as pd
@@ -1063,6 +1063,12 @@ async def _process_repositories(api, df, log_queue=None):
                         result = await process_github_repository(api, github_url, version, name=name)
                     else:
                         result = await process_github_repository(api, url, version, name=name)
+                    # GitHub 无对应版本 tag 时，改用 pkg.go.dev 带版本链接（经 proxy 校验有效）
+                    if result.get("status") == "success" and result.get("used_default_branch"):
+                        versioned_url = await build_versioned_pkggo_license_url(url, version)
+                        if versioned_url:
+                            logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
+                            result["license_files"] = versioned_url
 
                 elif is_npm_package_url(url):
                     logger.info(f"妫€娴嬪埌 npm 鍖?URL: {url}")
@@ -1087,7 +1093,15 @@ async def _process_repositories(api, df, log_queue=None):
                             except:
                                 pass
                         result = await process_github_repository(api, url, version, name=name)
-                        
+
+                        # GitHub 成功但无对应版本 tag 时，license_files 改用
+                        # mvnrepository 带版本链接（版本经 repo1.maven.org 校验）
+                        if result.get("status") == "success" and result.get("used_default_branch"):
+                            versioned_url = await build_versioned_maven_license_url(url, version)
+                            if versioned_url:
+                                logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
+                                result["license_files"] = versioned_url
+
                         if result.get("status") != "success":
                             logger.info(f"GitHub 流程未成功，调用 Maven 处理函数")
                             if log_queue:

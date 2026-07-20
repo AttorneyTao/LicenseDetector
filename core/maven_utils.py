@@ -158,6 +158,55 @@ def _convert_maven_central_url_to_mvnrepository_format(url: str) -> Optional[str
     return mvn_url
 
 
+async def build_versioned_maven_license_url(url: str, version: Optional[str] = None) -> Optional[str]:
+    """构造带版本号的 mvnrepository.com 组件页链接，供 GitHub 无对应版本 tag 时回退使用。
+
+    版本存在性通过 repo1.maven.org（Maven Central 源站，对脚本友好）校验；
+    mvnrepository.com 本身有 Cloudflare 反爬，不直接对其发请求，但对外仍输出
+    mvnrepository.com 形式的链接以保持与既有 Maven 回退链接一致。
+
+    Parameters
+    ----------
+    url: str
+        输入的 Maven URL（mvnrepository.com/artifact 或 repo1.maven.org/maven2 形式）。
+    version: str, optional
+        期望的版本号；缺省时使用 URL 中携带的版本号。
+
+    Returns
+    -------
+    str or None
+        校验通过的带版本链接；解析失败、无版本号或该版本在 Maven Central
+        不存在时返回 None。
+    """
+    logger = logging.getLogger("maven_utils.versioned_url")
+    try:
+        if "repo1.maven.org" in url:
+            converted = _convert_maven_central_url_to_mvnrepository_format(url)
+            if not converted:
+                return None
+            url = converted
+        gav = parse_mvnrepository_url(url)
+    except Exception as exc:
+        logger.debug(f"Cannot parse Maven URL {url}: {exc}")
+        return None
+
+    resolved_version = version or gav.version
+    if not resolved_version:
+        return None
+
+    check_url = (
+        f"https://repo1.maven.org/maven2/"
+        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/{resolved_version}/"
+    )
+    from core.utils import is_url_reachable
+
+    if not await is_url_reachable(check_url):
+        logger.info(f"Maven Central has no version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
+        return None
+
+    return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
+
+
 def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
     """Best effort helper to perform a GET request and return the text body and status.
 
