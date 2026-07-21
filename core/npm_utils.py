@@ -278,12 +278,14 @@ def _build_npm_version_resolve_prompt(
     candidate_versions: List[str],
     version: str,
     default_version: str,
+    pkg_name: str = "",
 ) -> str:
     if PROMPTS and "version_resolve" in PROMPTS:
         return PROMPTS["version_resolve"].format(
             candidate_versions=candidate_versions,
             version=version,
             default_branch=default_version,
+            name=pkg_name or "",
         )
 
     return f"""
@@ -334,6 +336,7 @@ def _llm_choose_npm_version(
             candidate_versions=candidate_versions,
             version=version,
             default_version=default_version,
+            pkg_name=pkg_name,
         )
 
         llm_logger.info("NPM Version Resolve Request:")
