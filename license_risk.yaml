@@ -11,9 +11,23 @@
 #   unknown  - anything that does not match a known identifier
 #
 # When a project's concluded license is an SPDX expression containing
-# multiple licenses (e.g. "MIT AND GPL-3.0-or-later AND Others"), the
-# aggregate risk is the HIGHEST risk of any component, in the order:
-#   high > medium > low > unknown
+# multiple licenses, aggregation follows the SPDX operator semantics:
+#   AND  - all licenses must be complied with -> take the HIGHEST risk
+#          ("MIT AND GPL-3.0-or-later" -> high)
+#   OR   - any one may be chosen -> take the LOWEST risk
+#          ("MIT OR GPL-3.0-or-later" -> low)
+#   WITH - the exception does not change the license's own risk
+# AND binds tighter than OR, and parentheses are honoured, so
+# "GPL-3.0-only OR (MIT AND LGPL-2.1)" evaluates to medium.
+#
+# A branch whose risk is unknown cannot be relied upon, so OR prefers the
+# lowest risk among the branches that CAN be determined; the result is only
+# unknown when no branch can be determined.
+#
+# The synthetic marker "Others" (appended by the pipeline when third-party
+# directories are detected, e.g. "MIT AND Others") is NOT a license and is
+# deliberately absent from the table below: it is skipped during aggregation,
+# so the risk of "MIT AND Others" is simply the risk of MIT.
 #
 # Matching is case-insensitive and ignores SPDX suffixes such as
 # "-or-later", "-only", "+", and license-exception suffixes after WITH.
@@ -146,9 +160,11 @@ categories:
 
   unlicensed:
     # No license grant at all — treat as all-rights-reserved.
+    # NOTE: "Others" is intentionally NOT listed here — it is a structural
+    # marker meaning "additionally contains third-party code of unknown
+    # composition", not a license grant. See the header comment.
     risk_level: high
     licenses:
       - Unlicensed
       - NoLicense
       - NOASSERTION
-      - Others           # bundled third-party of unknown composition
