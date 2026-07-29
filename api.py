@@ -983,7 +983,7 @@ async def analyze_with_stream_and_download(
 
 async def _process_repositories(api, df, log_queue=None):
     """Process all repositories with concurrency control"""
-    from core.github_utils import normalize_github_url
+    from core.github_utils import resolve_input_ref
     import re
     
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -1009,9 +1009,10 @@ async def _process_repositories(api, df, log_queue=None):
             name = None
             try:
                 original_url = row.get("github_url")
-                url = normalize_github_url(original_url)
-                version = row.get("version")
-                name = row.get("name", None)
+                # purl 输入在此翻译为对应生态的注册表 URL，并回填 version / name
+                url, version, name = resolve_input_ref(
+                    original_url, row.get("version"), row.get("name", None)
+                )
                 
                 # Check if it's a pub.dev (Dart/Flutter) package
                 if isinstance(url, str) and (
@@ -1177,11 +1178,13 @@ async def _process_repositories(api, df, log_queue=None):
                         pass
                 # 异常场景同样尝试归档下载兜底
                 fallback_result = None
-                fallback_url = normalize_github_url(row.get("github_url"))
+                fallback_url, fallback_version, fallback_name = resolve_input_ref(
+                    row.get("github_url"), row.get("version"), name
+                )
                 if is_direct_archive_url(fallback_url):
                     try:
                         fallback_result = await process_direct_archive_url(
-                            fallback_url, row.get("version"), name, log_queue=log_queue
+                            fallback_url, fallback_version, fallback_name, log_queue=log_queue
                         )
                     except Exception as e2:
                         logger.warning(f"归档兜底分析也失败 {fallback_url}: {e2}")
