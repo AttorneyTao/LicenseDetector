@@ -831,53 +831,180 @@ def _normalize_license_id(lic: str) -> str:
     return s
 
 
-def _split_spdx_expression(expr: str) -> List[str]:
-    """Split an SPDX expression into individual license tokens.
+# 风险聚合中的结构性标记：不是真正的许可证，不参与风险计算。
+# "Others" 由主流程在检测到第三方目录时追加（如 "MIT AND Others"），
+# 含义是"另含成分未知的第三方代码"，整体风险应以其之前的表达式为准。
+_NON_LICENSE_MARKERS = {"others"}
 
-    Handles AND / OR / WITH and parentheses. Returns the licence
-    identifiers only (drops exception names after WITH).
+_SPDX_OPERATORS = {"AND", "OR", "WITH"}
+
+
+class _SpdxSyntaxError(ValueError):
+    """SPDX 表达式无法按语法解析。"""
+
+
+def _severity_index(level: Optional[str], severity_order: List[str]) -> int:
+    """severity_order 为「最严重在前」，因此索引越小风险越高。
+
+    不在配置中的等级视为最轻，排在末尾。
     """
-    if not expr:
-        return []
-    cleaned = re.sub(r"[()]", " ", expr)
-    tokens = re.split(r"\s+(?:AND|OR|WITH)\s+", cleaned, flags=re.IGNORECASE)
-    return [t.strip() for t in tokens if t and t.strip()]
+    try:
+        return severity_order.index(level)
+    except ValueError:
+        return len(severity_order)
+
+
+def _tokenize_spdx(expr: str) -> List[str]:
+    """把 SPDX 表达式切成括号与标识符 token。"""
+    return re.findall(r"\(|\)|[^\s()]+", expr)
+
+
+def _risk_of_token(token: str, config: Dict[str, Any]) -> Optional[str]:
+    """单个许可证标识符的风险等级；结构性标记返回 None（不参与聚合）。"""
+    key = _normalize_license_id(token)
+    if key in _NON_LICENSE_MARKERS:
+        return None
+    return config["license_to_risk"].get(key, config["default"])
+
+
+def _combine_and(risks: List[Optional[str]], config: Dict[str, Any]) -> Optional[str]:
+    """AND：需同时满足所有许可证，取其中风险最高的一个。"""
+    present = [r for r in risks if r is not None]
+    if not present:
+        return None
+    return min(present, key=lambda r: _severity_index(r, config["severity_order"]))
+
+
+def _combine_or(risks: List[Optional[str]], config: Dict[str, Any]) -> Optional[str]:
+    """OR：可任选其一，取其中风险最低的一个。
+
+    风险未知的分支不能作为"最低风险"的依据——使用者无法依赖一个
+    无法判定的许可证。因此只要存在可判定的分支，就在可判定的分支中取最低；
+    全部无法判定时才返回未知。
+    """
+    present = [r for r in risks if r is not None]
+    if not present:
+        return None
+    determinate = [r for r in present if r != config["default"]]
+    candidates = determinate or present
+    return max(candidates, key=lambda r: _severity_index(r, config["severity_order"]))
+
+
+def _parse_spdx_term(tokens: List[str], pos: int, config: Dict[str, Any]):
+    """term := '(' or_expr ')' | license [WITH exception]"""
+    if pos >= len(tokens):
+        raise _SpdxSyntaxError("表达式意外结束")
+
+    token = tokens[pos]
+    if token == "(":
+        risk, pos = _parse_spdx_or(tokens, pos + 1, config)
+        if pos >= len(tokens) or tokens[pos] != ")":
+            raise _SpdxSyntaxError("括号不匹配")
+        return risk, pos + 1
+
+    if token == ")" or token.upper() in _SPDX_OPERATORS:
+        raise _SpdxSyntaxError(f"意外的 token: {token}")
+
+    pos += 1
+    # WITH 后跟的是例外条款，不改变许可证本身的风险等级
+    if pos + 1 < len(tokens) and tokens[pos].upper() == "WITH":
+        pos += 2
+    return _risk_of_token(token, config), pos
+
+
+def _parse_spdx_and(tokens: List[str], pos: int, config: Dict[str, Any]):
+    """and_expr := term (AND term)*"""
+    risks = []
+    risk, pos = _parse_spdx_term(tokens, pos, config)
+    risks.append(risk)
+    while pos < len(tokens) and tokens[pos].upper() == "AND":
+        risk, pos = _parse_spdx_term(tokens, pos + 1, config)
+        risks.append(risk)
+    return (risks[0] if len(risks) == 1 else _combine_and(risks, config)), pos
+
+
+def _parse_spdx_or(tokens: List[str], pos: int, config: Dict[str, Any]):
+    """or_expr := and_expr (OR and_expr)*  —— AND 的优先级高于 OR"""
+    risks = []
+    risk, pos = _parse_spdx_and(tokens, pos, config)
+    risks.append(risk)
+    while pos < len(tokens) and tokens[pos].upper() == "OR":
+        risk, pos = _parse_spdx_and(tokens, pos + 1, config)
+        risks.append(risk)
+    return (risks[0] if len(risks) == 1 else _combine_or(risks, config)), pos
+
+
+def _worst_risk_fallback(expr: str, config: Dict[str, Any]) -> Optional[str]:
+    """解析失败时的降级策略：忽略运算符与括号，取所有许可证中的最高风险。
+
+    表达式畸形时无法判断运算符语义，取最高风险是保守选择。
+    """
+    risks = []
+    skip_next = False
+    for token in _tokenize_spdx(expr or ""):
+        if skip_next:  # WITH 后的例外条款
+            skip_next = False
+            continue
+        if token in ("(", ")"):
+            continue
+        upper = token.upper()
+        if upper == "WITH":
+            skip_next = True
+            continue
+        if upper in _SPDX_OPERATORS:
+            continue
+        risks.append(_risk_of_token(token, config))
+    return _combine_and(risks, config)
+
+
+def evaluate_spdx_risk(expr: str, config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """按 SPDX 运算符语义求表达式的整体风险等级。
+
+    - ``AND``：必须同时遵守，取最高风险
+    - ``OR``：可任选其一，取最低风险（AND 优先级高于 OR）
+    - ``WITH``：例外条款不改变许可证本身的风险等级
+    - ``Others``：结构性标记，不参与聚合（``"MIT AND Others"`` 的风险即 MIT 的风险）
+
+    Returns:
+        Optional[str]: 风险等级键；表达式为空或只含结构性标记时返回 ``None``。
+    """
+    config = config or _load_risk_config()
+    tokens = _tokenize_spdx(expr or "")
+    if not tokens:
+        return None
+    try:
+        risk, pos = _parse_spdx_or(tokens, 0, config)
+        if pos != len(tokens):
+            raise _SpdxSyntaxError(f"存在无法解析的多余 token: {tokens[pos]}")
+        return risk
+    except _SpdxSyntaxError as e:
+        logger.warning(f"SPDX 表达式解析失败，降级为取最高风险: {expr} ({e})")
+        return _worst_risk_fallback(expr, config)
 
 
 def get_risk_level(concluded_license: Optional[str]) -> str:
     """Return the risk_level for a concluded license string.
 
     The input may be a single SPDX identifier ("BSD-3-Clause"), an SPDX
-    expression ("Apache-2.0 AND MIT AND Others"), or the synthetic
-    "Unlicensed" / empty value. When multiple licenses are present the
-    aggregate is the worst risk in the severity_order from the config.
+    expression ("Apache-2.0 AND MIT", "MIT OR GPL-3.0-only"), or the
+    synthetic "Unlicensed" / empty value. Aggregation follows the SPDX
+    operator semantics — see :func:`evaluate_spdx_risk`.
     """
     config = _load_risk_config()
-    default = config["default"]
-    severity_order = config["severity_order"]
-    license_to_risk = config["license_to_risk"]
     labels = config["labels"]
 
     def _label(level: str) -> str:
         return labels.get(level, level)
 
     if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
-        return _label(default)
+        return _label(config["default"])
 
     expr = str(concluded_license).strip()
     if not expr:
-        return _label(default)
+        return _label(config["default"])
 
-    tokens = _split_spdx_expression(expr) or [expr]
-    risks = []
-    for token in tokens:
-        key = _normalize_license_id(token)
-        risks.append(license_to_risk.get(key, default))
-
-    for level in severity_order:
-        if level in risks:
-            return _label(level)
-    return _label(default)
+    risk = evaluate_spdx_risk(expr, config)
+    return _label(risk or config["default"])
 
 
 def extract_thirdparty_dirs_column(df):
