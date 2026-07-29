@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 from .config import LLM_CONFIG, THIRD_PARTY_KEYWORDS
 from .llm_provider import get_llm_provider
 from dotenv import load_dotenv
@@ -956,3 +956,196 @@ def find_top_level_thirdparty_dirs_local(root_dir: str) -> List[str]:
         # 只查root_dir下的所有子目录（不递归更深层）
         break
     return thirdparty_dirs
+
+
+# ============================================================================
+# Package URL (purl) 解析
+# ============================================================================
+# 纯字符串处理，无外部依赖，供入口层把 purl 翻译成各生态既有的注册表 URL。
+# 规范：https://github.com/package-url/purl-spec
+#   pkg:type/namespace/name@version?qualifiers#subpath
+
+class ParsedPurl(NamedTuple):
+    """解析后的 purl 各组成部分（均已 percent-decode）。"""
+    type: str
+    namespace: Optional[str]
+    name: str
+    version: Optional[str]
+    qualifiers: Dict[str, str]
+    subpath: Optional[str]
+
+    @property
+    def full_name(self) -> str:
+        """带 namespace 的完整包名，npm scope 场景下即 ``@scope/name``。"""
+        return f"{self.namespace}/{self.name}" if self.namespace else self.name
+
+    @property
+    def component_name(self) -> str:
+        """回填 name 列用的组件名。
+
+        npm 的 scope 是包名的一部分（``@scope/name``），必须整体带上；
+        其余生态的 namespace 是 groupId / 模块路径等定位信息，不属于组件名，
+        沿用各自 handler 期望的短名（如 maven 的 artifactId）。
+        """
+        return self.full_name if self.type == "npm" else self.name
+
+
+def is_purl(value: Any) -> bool:
+    """判断输入是否为 purl（以 ``pkg:`` 开头，大小写不敏感）。"""
+    if not isinstance(value, str):
+        return False
+    return value.strip().lower().startswith("pkg:")
+
+
+def _decode_purl_component(value: str) -> str:
+    """purl 各段均为 percent-encoded，解码后再使用。"""
+    from urllib.parse import unquote
+    return unquote(value)
+
+
+def parse_purl(value: Any) -> Optional[ParsedPurl]:
+    """把 purl 字符串解析为 :class:`ParsedPurl`，无法解析时返回 ``None``。
+
+    解析顺序遵循规范：先切 ``#subpath``，再切 ``?qualifiers``，
+    再从右侧切 ``@version``，剩余部分按 ``/`` 拆成 type / namespace / name。
+    """
+    if not is_purl(value):
+        return None
+
+    try:
+        remainder = value.strip()
+        # scheme：pkg: 之后允许出现历史遗留的 //
+        remainder = remainder[len("pkg:"):].lstrip("/")
+
+        subpath = None
+        if "#" in remainder:
+            remainder, raw_subpath = remainder.split("#", 1)
+            subpath = _decode_purl_component(raw_subpath).strip("/") or None
+
+        qualifiers: Dict[str, str] = {}
+        if "?" in remainder:
+            remainder, raw_qualifiers = remainder.split("?", 1)
+            for pair in raw_qualifiers.split("&"):
+                if not pair or "=" not in pair:
+                    continue
+                key, raw_val = pair.split("=", 1)
+                decoded = _decode_purl_component(raw_val)
+                if key.strip() and decoded:
+                    qualifiers[key.strip().lower()] = decoded
+
+        version = None
+        if "@" in remainder:
+            # name 中的 @ 必须编码，因此最后一个 @ 之后即为 version
+            remainder, raw_version = remainder.rsplit("@", 1)
+            version = _decode_purl_component(raw_version).strip() or None
+
+        parts = [p for p in remainder.split("/") if p]
+        if len(parts) < 2:
+            logger.warning(f"purl 缺少 type 或 name，无法解析: {value}")
+            return None
+
+        purl_type = _decode_purl_component(parts[0]).lower()
+        name = _decode_purl_component(parts[-1])
+        namespace = "/".join(_decode_purl_component(p) for p in parts[1:-1]) or None
+
+        # 类型相关的大小写 / 分隔符归一（规范要求）
+        if purl_type == "pypi":
+            name = name.lower().replace("_", "-")
+        elif purl_type in {"npm", "golang"}:
+            name = name.lower()
+            if namespace:
+                namespace = namespace.lower()
+
+        if not name:
+            logger.warning(f"purl 解析出空 name: {value}")
+            return None
+
+        return ParsedPurl(
+            type=purl_type,
+            namespace=namespace,
+            name=name,
+            version=version,
+            qualifiers=qualifiers,
+            subpath=subpath,
+        )
+    except Exception as e:
+        logger.warning(f"解析 purl 失败 {value}: {e}")
+        return None
+
+
+def _normalize_vcs_url(vcs_url: str) -> Optional[str]:
+    """把 SBOM 常见的 vcs_url 归一为可直接访问的仓库地址。
+
+    形如 ``git+https://github.com/o/r.git@abc123`` -> ``https://github.com/o/r``。
+    """
+    url = vcs_url.strip()
+    if not url:
+        return None
+    if "+" in url.split("://", 1)[0]:
+        url = url.split("+", 1)[1]
+    if url.startswith("git@github.com:"):
+        url = "https://github.com/" + url[len("git@github.com:"):]
+    # 去掉 vcs_url 尾部的 @revision（协议里的 :// 不受影响）
+    scheme, sep, rest = url.partition("://")
+    if sep and "@" in rest:
+        rest = rest.rsplit("@", 1)[0]
+        url = f"{scheme}://{rest}"
+    if url.endswith(".git"):
+        url = url[: -len(".git")]
+    return url or None
+
+
+def purl_to_url(purl: ParsedPurl) -> Optional[str]:
+    """把解析后的 purl 映射为现有流程已经支持的注册表 URL。
+
+    只产出各生态 handler 今天已经能识别的 URL 形状（不带版本），
+    版本信息由调用方通过 ``version`` 参数单独传递，保持原有处理逻辑不变。
+    未覆盖的 type 返回 ``None``，由调用方决定回退策略。
+    """
+    if purl is None:
+        return None
+
+    t = purl.type
+    ns = purl.namespace
+    name = purl.name
+
+    if t == "npm":
+        return f"https://www.npmjs.com/package/{purl.full_name}"
+    if t == "pypi":
+        return f"https://pypi.org/project/{name}"
+    if t == "maven":
+        # groupId 必需，缺失时无法定位构件
+        return f"https://mvnrepository.com/artifact/{ns}/{name}" if ns else None
+    if t == "golang":
+        return f"https://pkg.go.dev/{purl.full_name}"
+    if t == "cargo":
+        return f"https://crates.io/crates/{name}"
+    if t == "pub":
+        return f"https://pub.dev/packages/{name}"
+    if t == "nuget":
+        return f"https://www.nuget.org/packages/{name}"
+    if t == "github":
+        return f"https://github.com/{ns}/{name}" if ns else None
+
+    # generic 及未覆盖的 type：优先用 qualifier 里显式给出的下载 / 仓库地址，
+    # 命中后可复用归档兜底或 GitHub 主流程，避免无谓的 LLM 查找。
+    download_url = purl.qualifiers.get("download_url")
+    if download_url:
+        return download_url
+    vcs_url = purl.qualifiers.get("vcs_url")
+    if vcs_url:
+        normalized = _normalize_vcs_url(vcs_url)
+        if normalized:
+            return normalized
+    return None
+
+
+def is_blank_value(value: Any) -> bool:
+    """判断输入是否为空值（None / NaN / 空白字符串）。"""
+    if value is None:
+        return True
+    if isinstance(value, float) and value != value:  # NaN
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    return False

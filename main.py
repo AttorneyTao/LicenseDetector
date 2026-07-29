@@ -49,7 +49,7 @@ from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 # Load Prompts Section
 import yaml
 
-from core.github_utils import process_github_repository, normalize_github_url
+from core.github_utils import process_github_repository, resolve_input_ref
 with open("prompts.yaml", "r", encoding="utf-8") as f:
     PROMPTS = yaml.safe_load(f)
 
@@ -185,12 +185,12 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     running_tasks += 1
                     logger.info(f"当前并发任务数: {running_tasks}")
 
-                    from core.github_utils import normalize_github_url
                     from core.maven_utils import analyze_maven_repository_url
                     original_url = row["github_url"]  # 保存原始URL
-                    url = normalize_github_url(original_url)
-                    version = row.get("version")
-                    name = row.get("name", None)
+                    # purl 输入在此翻译为对应生态的注册表 URL，并回填 version / name
+                    url, version, name = resolve_input_ref(
+                        original_url, row.get("version"), row.get("name", None)
+                    )
 
                     # 新增：判断是否为 Go 包
                     is_go_pkg = False
@@ -363,11 +363,13 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     logger.error(f"处理失败 {row.get('github_url')}: {e}", exc_info=True)
                     # 异常场景同样尝试归档下载兜底
                     fallback_result = None
-                    fallback_url = normalize_github_url(row.get("github_url"))
+                    fallback_url, fallback_version, fallback_name = resolve_input_ref(
+                        row.get("github_url"), row.get("version"), name
+                    )
                     if is_direct_archive_url(fallback_url):
                         try:
                             fallback_result = await process_direct_archive_url(
-                                fallback_url, row.get("version"), name
+                                fallback_url, fallback_version, fallback_name
                             )
                         except Exception as e2:
                             logger.warning(f"归档兜底分析也失败 {fallback_url}: {e2}")

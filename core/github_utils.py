@@ -18,7 +18,7 @@ import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pypi_utils import process_pypi_repository
-from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed, prepare_license_text
+from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed, prepare_license_text, is_purl, parse_purl, purl_to_url, is_blank_value
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
 from core.llm_provider import get_llm_provider
 import platform
@@ -89,6 +89,63 @@ def normalize_github_url(url: str) -> str:
     if url.startswith("github.com/"):
         return "https://" + url
     return url
+
+
+def resolve_input_ref(
+    raw_url: Any,
+    version: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """把一行输入归一为 (url, version, name)，兼容 purl 与普通 URL。
+
+    非 purl 输入原样交给 :func:`normalize_github_url`，行为完全不变。
+    purl 输入则翻译成对应生态既有的注册表 URL，并用 purl 自带的
+    version / name 覆盖同名列（冲突时记 WARNING）；无法映射的 type
+    保持原样透传，由下游 LLM 兜底查找 GitHub 仓库。
+
+    Args:
+        raw_url: 输入的 github_url 列原值，可能是 URL 或 purl。
+        version: 输入的 version 列原值。
+        name: 输入的 name 列原值。
+
+    Returns:
+        Tuple[str, Optional[str], Optional[str]]: 归一后的 URL、版本与组件名。
+    """
+    if not is_purl(raw_url):
+        return normalize_github_url(raw_url), version, name
+
+    purl = parse_purl(raw_url)
+    if purl is None:
+        logger.warning(f"purl 解析失败，按普通 URL 处理: {raw_url}")
+        return normalize_github_url(raw_url), version, name
+
+    resolved_url = purl_to_url(purl)
+    if resolved_url:
+        logger.info(f"purl 已解析: {raw_url} -> {resolved_url} (type={purl.type})")
+    else:
+        # 未覆盖的生态：原样透传，下游按非 GitHub URL 走 LLM 查找
+        logger.warning(f"purl type 暂未支持映射，原样透传: {raw_url} (type={purl.type})")
+        resolved_url = normalize_github_url(raw_url)
+
+    if purl.subpath:
+        logger.info(f"purl subpath 暂不参与定位，已忽略: {purl.subpath} ({raw_url})")
+
+    resolved_version = version
+    if purl.version:
+        if not is_blank_value(version) and str(version).strip() != purl.version:
+            logger.warning(
+                f"version 列 ({version}) 与 purl 版本 ({purl.version}) 不一致，以 purl 为准: {raw_url}"
+            )
+        resolved_version = purl.version
+
+    if not is_blank_value(name) and str(name).strip() != purl.component_name:
+        logger.warning(
+            f"name 列 ({name}) 与 purl 包名 ({purl.component_name}) 不一致，以 purl 为准: {raw_url}"
+        )
+    resolved_name = purl.component_name
+
+    return resolved_url, resolved_version, resolved_name
+
 
 class GitHubAPI:
     """

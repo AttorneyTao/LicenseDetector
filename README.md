@@ -95,9 +95,31 @@ pip install -e .
 ### 3. 准备输入文件
 
 创建 `input.xlsx` 文件，包含以下列：
-- `github_url`: GitHub仓库URL或包管理器URL
+- `github_url`: GitHub仓库URL、包管理器URL，或 [purl](https://github.com/package-url/purl-spec)（Package URL）
 - `version`: （可选）指定分析的版本
 - `name`: （可选）组件名称
+
+#### 使用 purl 作为输入
+
+`github_url` 列直接填 purl 即可，无需新增列，系统会自动识别并翻译成对应生态的注册表地址后按原有流程分析：
+
+| purl 示例 | 实际分析的地址 |
+| --- | --- |
+| `pkg:npm/%40babel/core@7.24.0` | `https://www.npmjs.com/package/@babel/core` |
+| `pkg:pypi/requests@2.31.0` | `https://pypi.org/project/requests` |
+| `pkg:maven/org.apache.commons/commons-lang3@3.12.0` | `https://mvnrepository.com/artifact/org.apache.commons/commons-lang3` |
+| `pkg:golang/github.com/gin-gonic/gin@v1.9.1` | `https://pkg.go.dev/github.com/gin-gonic/gin` |
+| `pkg:cargo/serde@1.0.197` | `https://crates.io/crates/serde` |
+| `pkg:pub/http@1.2.0` | `https://pub.dev/packages/http` |
+| `pkg:nuget/Newtonsoft.Json@13.0.3` | `https://www.nuget.org/packages/Newtonsoft.Json` |
+| `pkg:github/torvalds/linux@v6.1` | `https://github.com/torvalds/linux` |
+| `pkg:generic/openssl@3.0.0?download_url=...` | qualifier 中的 `download_url`（走源码包下载分析） |
+
+说明：
+
+- purl 自带的 `@版本` 与包名会自动回填到 `version` / `name`；与列中已填的值冲突时**以 purl 为准**，并在日志中记录 WARNING。
+- 未覆盖的 purl type（如 `pkg:deb`、`pkg:conan`）会原样透传，走 LLM 查找 GitHub 仓库的兜底逻辑；若 purl 带有 `download_url` 或 `vcs_url` qualifier，则优先使用该地址。
+- 普通 URL 输入的行为完全不变。
 
 
 ### 4. 运行分析
