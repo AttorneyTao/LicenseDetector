@@ -18,6 +18,7 @@ from .utils import (
     construct_copyright_notice_async,
     find_matching_version,
     prepare_license_text,
+    licenses_disagree,
 )
 from bs4 import BeautifulSoup
 import tempfile
@@ -596,6 +597,9 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     logger.debug("Parsed repo_url: %s", repo_url)
 
     license_type = version_obj.get("license")
+    # npm 元数据里声明的许可证来自该版本自己的 package.json，是"包+版本"级别的声明；
+    # 后面与仓库级结论比对时只能用这个原始声明，不能用 README 兜底推断出来的值。
+    npm_declared_license = license_type
     logger.debug("License type: %s", license_type)
 
     readme_content = version_obj.get("readme")
@@ -737,11 +741,37 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
             github_scan_success = False
             logger.error("Failed to call process_github_repository: %s", e, exc_info=True)
 
-    # 没有 github 仓库，或 github 扫描失败时，分析 npm 包 tarball 中的 thirdparty 目录和 License 文件
+    # GitHub 仓库根目录的 LICENSE 覆盖的是整个仓库。对于 monorepo（例如
+    # fontsource/font-files 一个仓库发布上千个字体包），仓库根 LICENSE 描述的是
+    # 构建工具本身，而不是当前 npm 包分发的内容。只有在 npm 声明的许可证与 GitHub
+    # 扫描结论「完全没有交集」时，才认定仓库级结论不适用于本包——GitHub 结论只是
+    # 更细（多列出 bundled 许可证）时不算冲突，避免误伤正常情况。
+    npm_license_conflicts_with_repo = github_scan_success and licenses_disagree(
+        npm_declared_license, github_fields.get("license_file_license")
+    )
+    if npm_license_conflicts_with_repo:
+        logger.warning(
+            "npm declared license (%s) conflicts with GitHub repo license (%s) for %s@%s; "
+            "repo-level result is not authoritative for this package, falling back to its tarball",
+            npm_declared_license,
+            github_fields.get("license_file_license"),
+            pkg_name,
+            resolved_version,
+        )
+        # 冲突时 license_files / used_default_branch 都必须描述 npm 包自身，而不是仓库
+        final_license_file = license_files
+        final_used_default_branch = used_default_branch
+
+    # 没有 github 仓库、github 扫描失败，或仓库结论与 npm 声明冲突时，
+    # 分析 npm 包 tarball 中的 thirdparty 目录和 License 文件
     thirdparty_dirs: List[str] = []
     npm_license_content: Optional[str] = None
-    should_fallback_to_npm_tarball = (not repo_url or "github.com" not in repo_url) or (
-        repo_url and "github.com" in repo_url and not github_scan_success
+    tarball_license_analysis: Optional[Dict[str, Any]] = None
+    tarball_license_file_license: Optional[str] = None
+    should_fallback_to_npm_tarball = (
+        (not repo_url or "github.com" not in repo_url)
+        or (repo_url and "github.com" in repo_url and not github_scan_success)
+        or npm_license_conflicts_with_repo
     )
 
     if should_fallback_to_npm_tarball:
@@ -764,6 +794,25 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
                         license_analysis["thirdparty_dirs"] = thirdparty_dirs
                 else:
                     license_analysis = {"thirdparty_dirs": thirdparty_dirs}
+
+                # 与仓库结论冲突时，包内 LICENSE 才是本包本版本的权威依据
+                if npm_license_conflicts_with_repo and npm_license_content:
+                    tarball_license_analysis = await analyze_license_content_async(
+                        npm_license_content, license_files
+                    )
+                    if tarball_license_analysis:
+                        tarball_license_analysis["thirdparty_dirs"] = thirdparty_dirs
+                        tarball_license_file_license = tarball_license_analysis.get(
+                            "spdx_expression"
+                        ) or (
+                            tarball_license_analysis["licenses"][0]
+                            if tarball_license_analysis.get("licenses")
+                            else None
+                        )
+                    logger.info(
+                        "License resolved from npm tarball LICENSE: %s",
+                        tarball_license_file_license,
+                    )
             except Exception as e:
                 logger.warning("Failed to analyze npm tarball: %s", e)
         else:
@@ -771,8 +820,12 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     else:
         logger.info("GitHub scan succeeded; npm tarball fallback not needed")
 
+    # 仓库结论与 npm 声明冲突时，仓库的 LICENSE / README / 版权声明都属于另一个交付物，
+    # 一律不采用，改以 npm 包自身的数据为准。
+    use_github_fields = github_scan_success and not npm_license_conflicts_with_repo
+
     # 处理 copyright_notice 逻辑
-    if github_scan_success and github_copyright_notice and "original author and authors" not in github_copyright_notice:
+    if use_github_fields and github_copyright_notice and "original author and authors" not in github_copyright_notice:
         final_copyright_notice = github_copyright_notice
         logger.info("Using GitHub copyright_notice: %s", final_copyright_notice)
     else:
@@ -788,22 +841,29 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         )
         logger.debug("Copyright notice computed from npm data: %s", final_copyright_notice)
 
-    final_license_analysis = (
-        github_fields["license_analysis"]
-        if github_scan_success and github_fields["license_analysis"] is not None
-        else license_analysis
-    )
-    final_has_license_conflict = (
-        github_fields["has_license_conflict"] if github_scan_success else None
-    )
-    final_readme_license = (
-        github_fields["readme_license"]
-        if github_scan_success and github_fields["readme_license"] is not None
-        else readme_license
-    )
-    final_license_file_license = (
-        github_fields["license_file_license"] if github_scan_success else None
-    )
+    if npm_license_conflicts_with_repo:
+        final_license_analysis = tarball_license_analysis or license_analysis
+        final_has_license_conflict = True
+        final_readme_license = readme_license
+        # tarball 里没有 LICENSE 时留空，让 concluded_license 回落到 npm 声明的 license_type
+        final_license_file_license = tarball_license_file_license
+    else:
+        final_license_analysis = (
+            github_fields["license_analysis"]
+            if github_scan_success and github_fields["license_analysis"] is not None
+            else license_analysis
+        )
+        final_has_license_conflict = (
+            github_fields["has_license_conflict"] if github_scan_success else None
+        )
+        final_readme_license = (
+            github_fields["readme_license"]
+            if github_scan_success and github_fields["readme_license"] is not None
+            else readme_license
+        )
+        final_license_file_license = (
+            github_fields["license_file_license"] if github_scan_success else None
+        )
 
     result = {
         "input_url": url,
@@ -821,13 +881,19 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         "license_file_license": final_license_file_license,
         "copyright_notice": final_copyright_notice,
         "license_text": prepare_license_text(
-            github_fields.get("license_text") if github_scan_success and github_fields.get("license_text") else npm_license_content
+            github_fields.get("license_text") if use_github_fields and github_fields.get("license_text") else npm_license_content
         ),
         "status": "success",
         "license_determination_reason": (
             "Fetched from GitHub repository"
-            if github_scan_success
-            else "Fetched from npm registry"
+            if use_github_fields
+            else (
+                "Fetched from npm package tarball (GitHub repository license "
+                f"{github_fields.get('license_file_license')!r} conflicts with the license "
+                f"{npm_declared_license!r} declared by the package)"
+                if npm_license_conflicts_with_repo
+                else "Fetched from npm registry"
+            )
         ),
         "readme": readme_content[:5000] if readme_content else None,
     }
