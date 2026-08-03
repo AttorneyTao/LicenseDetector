@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Set
 from .config import LLM_CONFIG, THIRD_PARTY_KEYWORDS
 from .llm_provider import get_llm_provider
 from dotenv import load_dotenv
@@ -980,6 +980,46 @@ def evaluate_spdx_risk(expr: str, config: Optional[Dict[str, Any]] = None) -> Op
     except _SpdxSyntaxError as e:
         logger.warning(f"SPDX 表达式解析失败，降级为取最高风险: {expr} ({e})")
         return _worst_risk_fallback(expr, config)
+
+
+def extract_spdx_license_ids(expr: Optional[str]) -> Set[str]:
+    """取出 SPDX 表达式中出现的全部许可证标识符（规范化后）。
+
+    运算符、括号、``WITH`` 后的例外条款，以及 ``Others`` 之类的结构性标记
+    都不是许可证，不计入结果。``NOASSERTION`` 表示"未判定"，同样不计入。
+    """
+    ids: Set[str] = set()
+    skip_next = False
+    for token in _tokenize_spdx(expr or ""):
+        if skip_next:  # WITH 后的例外条款
+            skip_next = False
+            continue
+        if token in ("(", ")"):
+            continue
+        upper = token.upper()
+        if upper == "WITH":
+            skip_next = True
+            continue
+        if upper in _SPDX_OPERATORS:
+            continue
+        key = _normalize_license_id(token)
+        if key and key not in _NON_LICENSE_MARKERS and key != "noassertion":
+            ids.add(key)
+    return ids
+
+
+def licenses_disagree(declared: Optional[str], observed: Optional[str]) -> bool:
+    """判断两个许可证表达式是否互相矛盾（没有任何共同的许可证标识符）。
+
+    只有在两边都能解析出标识符、且交集为空时才判为矛盾。``observed``
+    仅仅比 ``declared`` 更细（例如额外列出了 bundled 许可证）不算矛盾，
+    以免把"信息更完整"的结果误判成冲突。
+    """
+    declared_ids = extract_spdx_license_ids(declared)
+    observed_ids = extract_spdx_license_ids(observed)
+    if not declared_ids or not observed_ids:
+        return False
+    return declared_ids.isdisjoint(observed_ids)
 
 
 def get_risk_level(concluded_license: Optional[str]) -> str:
