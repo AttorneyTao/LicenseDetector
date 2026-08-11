@@ -29,8 +29,14 @@ from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
-from core.maven_utils import analyze_maven_repository_url, build_versioned_maven_license_url
+from core.maven_utils import (
+    analyze_maven_repository_url,
+    build_maven_repository_result,
+    build_versioned_maven_license_url,
+    is_maven_repository_url,
+)
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
+from core.deb_utils import is_deb_package_url, process_deb_package
 
 import pandas as pd
 from tqdm import tqdm
@@ -1080,73 +1086,48 @@ async def _process_repositories(api, df, log_queue=None):
                             pass
                     result = await process_npm_repository(url, version)
 
+                elif is_deb_package_url(url):
+                    logger.info(f"检测到 Debian/Ubuntu 包 URL: {url}")
+                    if log_queue:
+                        try:
+                            log_queue.put_nowait(f"[INFO] 检测到 Debian/Ubuntu 包 URL: {url}")
+                        except:
+                            pass
+                    result = await process_deb_package(url, version, name)
+
                 else:
-                    # Check if it's a Maven URL
-                    is_maven_url = isinstance(url, str) and (
-                        "mvnrepository.com/artifact" in url or 
-                        "repo1.maven.org/maven2" in url
-                    )
-                    if is_maven_url:
-                        logger.info(f"检测到 Maven URL: {url}")
+                    if is_maven_repository_url(url, version):
+                        logger.info(f"检测到 Maven URL: {url}，优先分析原始仓库 POM")
                         if log_queue:
                             try:
-                                log_queue.put_nowait(f"[INFO] 检测到 Maven URL: {url}")
+                                log_queue.put_nowait(f"[INFO] 检测到 Maven URL，优先分析 POM: {url}")
                             except:
                                 pass
-                        result = await process_github_repository(api, url, version, name=name)
-
-                        # GitHub 成功但无对应版本 tag 时，license_files 改用
-                        # mvnrepository 带版本链接（版本经 repo1.maven.org 校验）
-                        if result.get("status") == "success" and result.get("used_default_branch"):
-                            versioned_url = await build_versioned_maven_license_url(url, version)
-                            if versioned_url:
-                                logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
-                                result["license_files"] = versioned_url
-
-                        if result.get("status") != "success":
-                            logger.info(f"GitHub 流程未成功，调用 Maven 处理函数")
+                        result = None
+                        try:
+                            maven_analysis = analyze_maven_repository_url(url, version)
+                            result = build_maven_repository_result(
+                                maven_analysis,
+                                original_url,
+                                version,
+                                name,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Maven POM 分析失败: {e}")
                             if log_queue:
                                 try:
-                                    log_queue.put_nowait(f"[INFO] GitHub 流程未成功，调用 Maven 处理函数")
+                                    log_queue.put_nowait(f"[WARNING] Maven POM 分析失败: {e}")
                                 except:
                                     pass
-                            try:
-                                maven_result = analyze_maven_repository_url(url)
-                                license_file_url = f"https://mvnrepository.com/artifact/{maven_result['group_id']}/{maven_result['artifact_id']}/{maven_result.get('version', '')}"
-                                
-                                copyright_notice = maven_result.get('copyright')
-                                if not copyright_notice:
-                                    org_parts = maven_result['group_id'].split(".")
-                                    orgname = org_parts[1] if len(org_parts) > 1 else org_parts[0]
-                                    copyright_notice = f"Copyright (c) {datetime.now().year} {orgname.capitalize()}"
-                                
-                                result = {
-                                    "input_url": original_url,
-                                    "repo_url": None,
-                                    "input_version": version,
-                                    "resolved_version": maven_result.get('version'),
-                                    "used_default_branch": False,
-                                    "component_name": name or maven_result['artifact_id'],
-                                    "license_files": license_file_url,
-                                    "license_analysis": {
-                                        "license_determination_reason": "Fetched from Maven Central POM",
-                                        "license_source": maven_result.get('license_source', 'maven_central')
-                                    },
-                                    "license_type": maven_result.get('license'),
-                                    "has_license_conflict": False,
-                                    "readme_license": None,
-                                    "license_file_license": maven_result.get('license'),
-                                    "copyright_notice": copyright_notice,
-                                    "status": "success",
-                                    "input_name": name,
-                                }
-                            except Exception as e:
-                                logger.warning(f"Maven 处理失败: {e}")
-                                if log_queue:
-                                    try:
-                                        log_queue.put_nowait(f"[WARNING] Maven 处理失败: {e}")
-                                    except:
-                                        pass
+
+                        if result is None:
+                            logger.info("POM 未提供许可证，回退至源码仓库发现流程")
+                            result = await process_github_repository(api, url, version, name=name)
+                            if result.get("status") == "success" and result.get("used_default_branch"):
+                                versioned_url = await build_versioned_maven_license_url(url, version)
+                                if versioned_url:
+                                    logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
+                                    result["license_files"] = versioned_url
                     else:
                         result = await process_github_repository(api, url, version, name=name)
 
@@ -1222,7 +1203,8 @@ def _generate_output(results):
         lambda row: get_concluded_license(
             row.get('license_type'),
             row.get('readme_license'),
-            row.get('license_file_license')
+            row.get('license_file_license'),
+            row.get('status'),
         ),
         axis=1
     )

@@ -1363,12 +1363,20 @@ async def process_github_repository(
                     substep_logger.info(f"NuGet API 成功，返回 NuGet 结果")
                     return nuget_result
 
-            github_url = await find_github_url_from_package_url(github_url, name) or github_url
-            if not github_url:
+            # 注意：查找失败时不能回落到原始包 URL——那会把一个已知不是 GitHub 的
+            # 地址送进 parse_github_url 并抛 ValueError，掩盖掉下面的 skipped 结果。
+            resolved_github_url = await find_github_url_from_package_url(github_url, name)
+            if resolved_github_url and urlparse(resolved_github_url).netloc != "github.com":
+                # LLM 偶尔会返回非 GitHub 地址，同样按未找到处理
+                substep_logger.warning(
+                    f"LLM 返回的不是 GitHub 地址，按未找到处理: {resolved_github_url}"
+                )
+                resolved_github_url = None
+            if not resolved_github_url:
                 substep_logger.warning(f"Could not find GitHub URL for {github_url}")
                 return {
                     "input_url": input_url,
-                    "repo_url": github_url,
+                    "repo_url": None,
                     "input_version": version,
                     "resolved_version": None,
                     "used_default_branch": False,
@@ -1383,6 +1391,7 @@ async def process_github_repository(
                     "status": "skipped",
                     "license_determination_reason": "Not a GitHub repository and could not find corresponding GitHub URL"
                 }
+            github_url = resolved_github_url
             substep_logger.info(f"Found corresponding GitHub URL: {github_url}")
 
         # Step 2: Parse URL
@@ -1959,11 +1968,14 @@ async def find_github_url_from_package_url(package_url: str, name: Optional[str]
                 result = json.loads(json_match.group())
                 github_url = result.get("github_url")
                 confidence = result.get("confidence", 0.0)
-                llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
                 if github_url and confidence >= 0.7:
+                    llm_logger.info(f"Found GitHub URL: {github_url} with confidence {confidence}")
                     return github_url
+                if github_url:
+                    llm_logger.info(f"No confident GitHub URL match found: {github_url} (confidence: {confidence})")
                 else:
-                    llm_logger.info(f"No confident GitHub URL match found (confidence: {confidence})")
+                    # 模型明确表示找不到对应仓库，此时 confidence 与结论无关
+                    llm_logger.info(f"LLM 未找到对应的 GitHub 仓库: {package_url}")
             else:
                 llm_logger.warning("No JSON found in GitHub URL lookup response")
     except Exception as e:

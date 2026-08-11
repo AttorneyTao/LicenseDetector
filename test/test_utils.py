@@ -1,4 +1,8 @@
-from core.utils import extract_thirdparty_dirs_column, find_top_level_thirdparty_dirs
+from core.utils import (
+    extract_thirdparty_dirs_column,
+    find_top_level_thirdparty_dirs,
+    get_concluded_license,
+)
 import pandas as pd
 
 def test_extract_thirdparty_dirs_column():
@@ -33,3 +37,19 @@ def test_find_top_level_thirdparty_dirs():
     ]
     result = find_top_level_thirdparty_dirs(tree)
     assert set(result) == {"third_party", "src/thirdparty", "deps/third-party", "thirdparty"}
+
+
+def test_failed_analysis_is_not_reported_as_unlicensed():
+    assert get_concluded_license(None, None, None, "error") == "Unreachable"
+
+
+def test_skipped_analysis_is_not_reported_as_unlicensed():
+    assert get_concluded_license(None, None, None, "skipped") == "Unknown"
+
+
+def test_successful_analysis_without_license_remains_unlicensed():
+    assert get_concluded_license(None, None, None, "success") == "Unlicensed"
+
+
+def test_observed_license_takes_precedence_over_error_status():
+    assert get_concluded_license(None, None, "Apache-2.0", "error") == "Apache-2.0"

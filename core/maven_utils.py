@@ -1,12 +1,11 @@
 """
 Utilities for parsing and analysing Maven artefact URLs.
 
-This module exposes helpers to extract the so‑called GAV triplet
-(groupId, artifactId and version) from a URL pointing at
-``https://mvnrepository.com``.  It also implements logic to resolve
-additional metadata via Maven Central where possible.  If the
-requested piece of information cannot be found on Maven Central, the
-original mvnrepository.com page will be consulted as a fall back.
+This module exposes helpers to extract the so-called GAV triplet
+(groupId, artifactId and version) from Maven Central, mvnrepository.com,
+Nexus/Artifactory and configured private-repository URLs.  License metadata
+is read from the POM in the originating repository first, with Maven Central
+used as a secondary source where appropriate.
 
 The primary entry point is the :func:`analyze_maven_repository_url`
 function which takes a single URL and returns a mapping containing
@@ -38,6 +37,7 @@ itself.
 
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -65,7 +65,7 @@ except ImportError:
 
 
 class MavenURLParseError(ValueError):
-    """Raised when a URL cannot be interpreted as a mvnrepository.com URL."""
+    """Raised when a URL cannot be interpreted as a Maven artifact URL."""
 
 
 @dataclass
@@ -87,6 +87,161 @@ class GAV:
         if self.version:
             return f"{self.group_id.replace('.', '/')}/{self.artifact_id}/{self.version}"
         return f"{self.group_id.replace('.', '/')}/{self.artifact_id}"
+
+
+@dataclass
+class MavenRepositoryLocation:
+    """Parsed Maven coordinates together with the repository that hosts them."""
+
+    gav: GAV
+    repository_base_url: str
+    pom_url: str
+
+
+_DEFAULT_MAVEN_CENTRAL_BASE = "https://repo1.maven.org/maven2"
+_MAVEN_FILE_SUFFIXES = {
+    ".pom", ".jar", ".war", ".ear", ".zip", ".aar", ".module",
+    ".xml", ".sha1", ".sha256", ".sha512", ".md5", ".asc",
+}
+
+
+def _configured_maven_repository_bases() -> List[str]:
+    """Return optional private repository roots configured by the operator.
+
+    ``MAVEN_REPOSITORY_BASE_URLS`` accepts comma/newline separated URLs, for
+    example ``https://repo.example.com/repository/releases``.  The URL itself
+    stays in the result so POM requests use the same private repository rather
+    than being silently redirected to Maven Central.
+    """
+
+    raw = os.getenv("MAVEN_REPOSITORY_BASE_URLS", "")
+    return [item.strip().rstrip("/") for item in re.split(r"[,\n]", raw) if item.strip()]
+
+
+def _looks_like_maven_artifact_file(segment: str) -> bool:
+    lower = segment.lower()
+    return any(lower.endswith(suffix) for suffix in _MAVEN_FILE_SUFFIXES)
+
+
+def _join_repository_url(base_url: str, relative_path: str) -> str:
+    return f"{base_url.rstrip('/')}/{relative_path.lstrip('/')}"
+
+
+def parse_maven_repository_location(
+    url: str,
+    version: Optional[str] = None,
+) -> MavenRepositoryLocation:
+    """Parse Maven Central, Nexus/Artifactory and configured private URLs.
+
+    Supported direct repository forms end in ``group/path/artifact/version``
+    (optionally followed by a POM/JAR filename).  Repository roots are detected
+    from Maven Central's ``/maven2/`` marker, common Nexus/Artifactory
+    ``/repository/<repo>/`` layouts, Tencent's
+    ``/repository/maven/<repo>/`` layout, or an explicitly configured root.
+    """
+
+    if not isinstance(url, str) or not url.strip():
+        raise MavenURLParseError("Maven URL is empty")
+
+    url = url.strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise MavenURLParseError(f"Unsupported Maven URL: {url}")
+
+    if "mvnrepository.com" in parsed.netloc.lower():
+        gav = parse_mvnrepository_url(url)
+        resolved_version = version or gav.version
+        gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
+        if not resolved_version:
+            pom_url = ""
+        else:
+            pom_url = _join_repository_url(
+                _DEFAULT_MAVEN_CENTRAL_BASE,
+                f"{gav.as_path()}/{gav.artifact_id}-{resolved_version}.pom",
+            )
+        return MavenRepositoryLocation(gav, _DEFAULT_MAVEN_CENTRAL_BASE, pom_url)
+
+    path = unquote(parsed.path).strip("/")
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        raise MavenURLParseError(f"Missing Maven path: {url}")
+
+    configured_base: Optional[str] = None
+    group_start: Optional[int] = None
+    normalized_url = f"{parsed.scheme}://{parsed.netloc}/{path}".rstrip("/")
+    for base in sorted(_configured_maven_repository_bases(), key=len, reverse=True):
+        if normalized_url == base or normalized_url.startswith(base + "/"):
+            base_path_parts = [p for p in unquote(urlparse(base).path).strip("/").split("/") if p]
+            configured_base = base
+            group_start = len(base_path_parts)
+            break
+
+    if group_start is None:
+        if "maven2" in parts:
+            marker = parts.index("maven2")
+            group_start = marker + 1
+        else:
+            # Tencent layout: /repository/maven/<repository-name>/<GAV path>
+            marker = next(
+                (i for i in range(len(parts) - 2)
+                 if parts[i] == "repository" and parts[i + 1] == "maven"),
+                None,
+            )
+            if marker is not None:
+                group_start = marker + 3
+            elif "repository" in parts:
+                # Common Nexus/Artifactory layout: /repository/<repo>/<GAV path>
+                marker = parts.index("repository")
+                if marker + 2 < len(parts):
+                    group_start = marker + 2
+
+    if group_start is None:
+        raise MavenURLParseError(f"Cannot determine Maven repository root: {url}")
+
+    is_file_url = _looks_like_maven_artifact_file(parts[-1])
+    version_index = len(parts) - (2 if is_file_url else 1)
+    if version:
+        matching_indexes = [i for i, part in enumerate(parts) if part == version]
+        if matching_indexes:
+            version_index = matching_indexes[-1]
+
+    artifact_index = version_index - 1
+    if artifact_index <= group_start:
+        raise MavenURLParseError(f"Incomplete Maven GAV path: {url}")
+
+    resolved_version = version or parts[version_index]
+    artifact_id = parts[artifact_index]
+    group_parts = parts[group_start:artifact_index]
+    if not group_parts or not artifact_id or not resolved_version:
+        raise MavenURLParseError(f"Incomplete Maven coordinates: {url}")
+
+    if configured_base:
+        repository_base_url = configured_base
+    else:
+        base_path = "/".join(parts[:group_start])
+        repository_base_url = f"{parsed.scheme}://{parsed.netloc}"
+        if base_path:
+            repository_base_url += f"/{base_path}"
+
+    gav = GAV(".".join(group_parts), artifact_id, resolved_version)
+    if is_file_url and parts[-1].lower().endswith(".pom"):
+        pom_url = url.split("?", 1)[0].split("#", 1)[0]
+    else:
+        pom_url = _join_repository_url(
+            repository_base_url,
+            f"{gav.as_path()}/{artifact_id}-{resolved_version}.pom",
+        )
+    return MavenRepositoryLocation(gav, repository_base_url, pom_url)
+
+
+def is_maven_repository_url(url: str, version: Optional[str] = None) -> bool:
+    """Return whether *url* is a supported Maven repository artifact URL."""
+
+    try:
+        parse_maven_repository_location(url, version)
+        return True
+    except (MavenURLParseError, TypeError, ValueError):
+        return False
 
 
 def _convert_maven_central_url_to_mvnrepository_format(url: str) -> Optional[str]:
@@ -159,7 +314,7 @@ def _convert_maven_central_url_to_mvnrepository_format(url: str) -> Optional[str
 
 
 async def build_versioned_maven_license_url(url: str, version: Optional[str] = None) -> Optional[str]:
-    """构造带版本号的 mvnrepository.com 组件页链接，供 GitHub 无对应版本 tag 时回退使用。
+    """构造带版本号的 Maven 组件链接，供 GitHub 无对应版本 tag 时回退使用。
 
     版本存在性通过 repo1.maven.org（Maven Central 源站，对脚本友好）校验；
     mvnrepository.com 本身有 Cloudflare 反爬，不直接对其发请求，但对外仍输出
@@ -168,7 +323,7 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
     Parameters
     ----------
     url: str
-        输入的 Maven URL（mvnrepository.com/artifact 或 repo1.maven.org/maven2 形式）。
+        输入的 Maven URL（Maven Central、mvnrepository、Nexus/Artifactory 或已配置私服）。
     version: str, optional
         期望的版本号；缺省时使用 URL 中携带的版本号。
 
@@ -180,12 +335,8 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
     """
     logger = logging.getLogger("maven_utils.versioned_url")
     try:
-        if "repo1.maven.org" in url:
-            converted = _convert_maven_central_url_to_mvnrepository_format(url)
-            if not converted:
-                return None
-            url = converted
-        gav = parse_mvnrepository_url(url)
+        location = parse_maven_repository_location(url, version)
+        gav = location.gav
     except Exception as exc:
         logger.debug(f"Cannot parse Maven URL {url}: {exc}")
         return None
@@ -194,17 +345,28 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
     if not resolved_version:
         return None
 
-    check_url = (
-        f"https://repo1.maven.org/maven2/"
-        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/{resolved_version}/"
+    parsed_host = urlparse(url).netloc.lower()
+    is_mvnrepository = "mvnrepository.com" in parsed_host
+    if is_mvnrepository:
+        check_base = _DEFAULT_MAVEN_CENTRAL_BASE
+    else:
+        check_base = location.repository_base_url
+    check_url = _join_repository_url(
+        check_base,
+        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/{resolved_version}/",
     )
     from core.utils import is_url_reachable
 
     if not await is_url_reachable(check_url):
-        logger.info(f"Maven Central has no version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
+        logger.info(f"Maven repository has no version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
         return None
 
-    return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
+    if is_mvnrepository or parsed_host in {"repo1.maven.org", "repo.maven.apache.org"}:
+        return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
+    return _join_repository_url(
+        location.repository_base_url,
+        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/{resolved_version}/",
+    )
 
 
 def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
@@ -368,7 +530,10 @@ def _parse_maven_metadata(xml_text: str) -> Optional[str]:
         return None
 
 
-def resolve_latest_version(gav: GAV) -> Optional[str]:
+def resolve_latest_version(
+    gav: GAV,
+    repository_base_url: str = _DEFAULT_MAVEN_CENTRAL_BASE,
+) -> Optional[str]:
     """Attempt to resolve the latest version of a given group/artifact.
 
     This helper fetches the ``maven‑metadata.xml`` from Maven Central
@@ -386,9 +551,9 @@ def resolve_latest_version(gav: GAV) -> Optional[str]:
         The resolved version string, or ``None``.
     """
     logger = logging.getLogger("maven_utils.resolve")
-    metadata_url = (
-        f"https://repo1.maven.org/maven2/{gav.group_id.replace('.', '/')}/"
-        f"{gav.artifact_id}/maven-metadata.xml"
+    metadata_url = _join_repository_url(
+        repository_base_url,
+        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/maven-metadata.xml",
     )
     logger.debug(f"Resolving latest version using metadata URL: {metadata_url}")
     text, status = _http_get(metadata_url)
@@ -446,26 +611,78 @@ def _extract_license_from_pom(pom_xml: str) -> Tuple[List[Dict], Optional[str], 
     return licenses_list, None, copyright_notice
 
 
-def fetch_license_from_maven_central(gav: GAV) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _snapshot_pom_url(
+    gav: GAV,
+    repository_base_url: str,
+) -> Optional[str]:
+    """Resolve a timestamped snapshot POM from version-level metadata."""
+
+    if not gav.version or not gav.version.endswith("-SNAPSHOT"):
+        return None
+    metadata_url = _join_repository_url(
+        repository_base_url,
+        f"{gav.as_path()}/maven-metadata.xml",
+    )
+    metadata_text, status = _http_get(metadata_url)
+    if not (status and 200 <= status < 300 and metadata_text):
+        return None
+    try:
+        root = ET.fromstring(metadata_text)
+    except ET.ParseError:
+        return None
+
+    for snapshot_version in root.findall("./versioning/snapshotVersions/snapshotVersion"):
+        if (snapshot_version.findtext("extension") or "").strip() != "pom":
+            continue
+        classifier = (snapshot_version.findtext("classifier") or "").strip()
+        value = (snapshot_version.findtext("value") or "").strip()
+        if value and not classifier:
+            return _join_repository_url(
+                repository_base_url,
+                f"{gav.as_path()}/{gav.artifact_id}-{value}.pom",
+            )
+
+    timestamp = (root.findtext("./versioning/snapshot/timestamp") or "").strip()
+    build_number = (root.findtext("./versioning/snapshot/buildNumber") or "").strip()
+    if timestamp and build_number:
+        snapshot_value = gav.version[:-len("SNAPSHOT")] + f"{timestamp}-{build_number}"
+        return _join_repository_url(
+            repository_base_url,
+            f"{gav.as_path()}/{gav.artifact_id}-{snapshot_value}.pom",
+        )
+    return None
+
+
+def fetch_license_from_maven_repository(
+    gav: GAV,
+    repository_base_url: str,
+    pom_url: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
-    直接下载 POM 并解析，不再先尝试 search API。
+    Download and analyze a POM from the repository supplied by the input URL.
     """
     logger = logging.getLogger("maven_utils.fetch")
     version = gav.version
     if not version:
         logger.debug(f"No version provided for {gav.group_id}:{gav.artifact_id}, attempting to resolve latest")
-        version = resolve_latest_version(gav)
+        version = resolve_latest_version(gav, repository_base_url)
         if not version:
             logger.info(f"Unable to determine version for {gav.group_id}:{gav.artifact_id}")
             return None, None, None
 
-    # 直接下载 POM 文件
+    gav = GAV(gav.group_id, gav.artifact_id, version)
     group_path = gav.group_id.replace('.', '/')
     pom_path = f"{group_path}/{gav.artifact_id}/{version}/{gav.artifact_id}-{version}.pom"
-    # 使用 repo1.maven.org 而不是 search.maven.org/remotecontent
-    pom_url = f"https://repo1.maven.org/maven2/{pom_path}"
+    pom_url = pom_url or _join_repository_url(repository_base_url, pom_path)
     logger.debug(f"Fetching POM from: {pom_url}")
     pom_text, status = _http_get(pom_url)
+    if not (status and 200 <= status < 300 and pom_text):
+        timestamped_pom_url = _snapshot_pom_url(gav, repository_base_url)
+        if timestamped_pom_url:
+            logger.debug("Fetching timestamped snapshot POM from: %s", timestamped_pom_url)
+            pom_text, status = _http_get(timestamped_pom_url)
+            if status and 200 <= status < 300 and pom_text:
+                pom_url = timestamped_pom_url
     logger.debug(f"POM download result - status: {status}, content length: {len(pom_text) if pom_text else 0}")
     
     if status and 200 <= status < 300 and pom_text:
@@ -477,7 +694,11 @@ def fetch_license_from_maven_central(gav: GAV) -> Tuple[Optional[str], Optional[
             logger.debug(f"First 500 characters of content: {pom_text[:500]}")
             
         # 递归查找license信息
-        licenses_list, _, cp = _extract_license_from_pom_recursive(pom_text, gav)
+        licenses_list, _, cp = _extract_license_from_pom_recursive(
+            pom_text,
+            gav,
+            repository_base_url=repository_base_url,
+        )
         logger.debug(f"Extracted licenses: {licenses_list}, copyright: {cp}")
         
         # 构造copyright notice，优先使用从POM中提取的copyright
@@ -489,7 +710,7 @@ def fetch_license_from_maven_central(gav: GAV) -> Tuple[Optional[str], Optional[
             # 使用大模型将license信息转换为SPDX expression
             spdx_expression = _convert_licenses_to_spdx(licenses_list)
             logger.info(f"POM license for {gav.group_id}:{gav.artifact_id}:{version} -> {spdx_expression}")
-            return spdx_expression, None, copyright_notice
+            return spdx_expression, pom_url, copyright_notice
         else:
             # 即使没有找到license，也要返回copyright信息
             logger.info(f"No licenses found for {gav.group_id}:{gav.artifact_id}:{version}, but returning copyright notice: {copyright_notice}")
@@ -498,7 +719,21 @@ def fetch_license_from_maven_central(gav: GAV) -> Tuple[Optional[str], Optional[
     return None, None, None
 
 
-def _extract_license_from_pom_recursive(pom_xml: str, gav: GAV, max_depth: int = 5) -> Tuple[List[Dict], Optional[str], Optional[str]]:
+def fetch_license_from_maven_central(gav: GAV) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Backward-compatible Maven Central wrapper."""
+
+    return fetch_license_from_maven_repository(
+        gav,
+        _DEFAULT_MAVEN_CENTRAL_BASE,
+    )
+
+
+def _extract_license_from_pom_recursive(
+    pom_xml: str,
+    gav: GAV,
+    max_depth: int = 5,
+    repository_base_url: str = _DEFAULT_MAVEN_CENTRAL_BASE,
+) -> Tuple[List[Dict], Optional[str], Optional[str]]:
     """
     递归提取POM中的license信息，直到找到license或达到最大深度。
     """
@@ -595,9 +830,19 @@ def _extract_license_from_pom_recursive(pom_xml: str, gav: GAV, max_depth: int =
             # 构造parent POM的URL并下载
             parent_group_path = parent_group_id.replace('.', '/')
             parent_pom_path = f"{parent_group_path}/{parent_artifact_id}/{parent_version}/{parent_artifact_id}-{parent_version}.pom"
-            parent_pom_url = f"https://repo1.maven.org/maven2/{parent_pom_path}"
+            parent_pom_url = _join_repository_url(repository_base_url, parent_pom_path)
             logger.debug(f"Fetching parent POM from: {parent_pom_url}")
             parent_pom_text, parent_status = _http_get(parent_pom_url)
+            if (
+                not (parent_status and 200 <= parent_status < 300 and parent_pom_text)
+                and repository_base_url.rstrip("/") != _DEFAULT_MAVEN_CENTRAL_BASE
+            ):
+                central_parent_url = _join_repository_url(
+                    _DEFAULT_MAVEN_CENTRAL_BASE,
+                    parent_pom_path,
+                )
+                logger.debug("Private repository missed parent POM; trying Maven Central: %s", central_parent_url)
+                parent_pom_text, parent_status = _http_get(central_parent_url)
             logger.debug(f"Parent POM download result - status: {parent_status}, content length: {len(parent_pom_text) if parent_pom_text else 0}")
             
             if parent_status and 200 <= parent_status < 300 and parent_pom_text:
@@ -611,7 +856,12 @@ def _extract_license_from_pom_recursive(pom_xml: str, gav: GAV, max_depth: int =
                 parent_gav = GAV(group_id=parent_group_id, artifact_id=parent_artifact_id, version=parent_version)
                 logger.debug(f"Recursively calling _extract_license_from_pom_recursive for parent POM")
                 # 修复：正确处理递归调用的返回值
-                parent_licenses, parent_url, parent_copyright = _extract_license_from_pom_recursive(parent_pom_text, parent_gav, max_depth - 1)
+                parent_licenses, parent_url, parent_copyright = _extract_license_from_pom_recursive(
+                    parent_pom_text,
+                    parent_gav,
+                    max_depth - 1,
+                    repository_base_url=repository_base_url,
+                )
                 # 如果parent POM找到了license信息，返回parent的结果
                 if parent_licenses and len(parent_licenses) > 0:
                     logger.debug(f"Found licenses in parent POM: {parent_licenses}")
@@ -737,8 +987,11 @@ def _fallback_extract_license_from_html(url: str) -> Tuple[Optional[str], Option
     return None, None, None
 
 
-def analyze_maven_repository_url(url: str) -> Dict[str, Any]:
-    """Analyse a single mvnrepository.com URL and return metadata.
+def analyze_maven_repository_url(
+    url: str,
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Analyse a Maven repository URL, reading its POM before other fallbacks.
 
     This high level helper ties together the various parsing and
     extraction routines.  It will always return a dictionary with the
@@ -750,17 +1003,16 @@ def analyze_maven_repository_url(url: str) -> Dict[str, Any]:
 
     The resolution strategy proceeds as follows:
 
-    1. Parse the URL to obtain the GAV.
-    2. Attempt to resolve licence metadata via Maven Central by
-       downloading and parsing the artefact's POM.
-    3. If no licence is discovered fall back to scraping the
-       mvnrepository.com page.
+    1. Parse the URL to obtain the GAV and originating repository root.
+    2. Download the POM from that same repository (including snapshot POMs).
+    3. For private repositories only, try Maven Central if the private POM does
+       not provide a license.
 
     Parameters
     ----------
     url: str
-        A URL pointing at a page on mvnrepository.com representing a
-        Maven artefact.
+        A Maven Central, mvnrepository.com, Nexus/Artifactory, Tencent mirror,
+        or configured private-repository artifact URL.
 
     Returns
     -------
@@ -777,52 +1029,58 @@ def analyze_maven_repository_url(url: str) -> Dict[str, Any]:
     logger = logging.getLogger("maven_utils.analyze")
     logger.info(f"Analyze Maven URL: {url}")
     
-    # 检查是否是Maven Central URL，如果是则转换为mvnrepository.com格式
-    if "repo1.maven.org" in url:
-        converted_url = _convert_maven_central_url_to_mvnrepository_format(url)
-        if converted_url:
-            logger.info(f"Converted Maven Central URL to: {converted_url}")
-            url = converted_url
-        else:
-            logger.warning(f"Failed to convert Maven Central URL: {url}")
-    
-    gav = parse_mvnrepository_url(url)
+    location = parse_maven_repository_location(url, version)
+    gav = location.gav
+    if not gav.version:
+        resolved_version = resolve_latest_version(gav, location.repository_base_url)
+        if resolved_version:
+            gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
+            location = MavenRepositoryLocation(
+                gav,
+                location.repository_base_url,
+                _join_repository_url(
+                    location.repository_base_url,
+                    f"{gav.as_path()}/{gav.artifact_id}-{resolved_version}.pom",
+                ),
+            )
+
     result: Dict[str, Any] = {
         "group_id": gav.group_id,
         "artifact_id": gav.artifact_id,
+        "repository_base_url": location.repository_base_url,
     }
     if gav.version:
         result["version"] = gav.version
-    else:
-        # Try to determine a version from Maven Central metadata
-        resolved_version = resolve_latest_version(gav)
-        if resolved_version:
-            result["version"] = resolved_version
 
-    # Try to fetch licence info from Maven Central
-    lic_name, lic_url, cp_notice = fetch_license_from_maven_central(gav)
+    lic_name, lic_url, cp_notice = fetch_license_from_maven_repository(
+        gav,
+        location.repository_base_url,
+        location.pom_url or None,
+    )
+    source = "maven_repository_pom"
+    central_hosts = {"repo1.maven.org", "repo.maven.apache.org"}
+    if urlparse(location.repository_base_url).netloc.lower() in central_hosts:
+        source = "maven_central"
+
+    if not lic_name and location.repository_base_url.rstrip("/") != _DEFAULT_MAVEN_CENTRAL_BASE:
+        central_license, central_url, central_copyright = fetch_license_from_maven_central(gav)
+        if central_license:
+            lic_name, lic_url, cp_notice = central_license, central_url, central_copyright
+            source = "maven_central"
+
     if lic_name:
         result["license"] = lic_name
         result["license_url"] = lic_url
-        result["license_source"] = "maven_central"
+        result["pom_url"] = lic_url
+        result["license_source"] = source
     else:
-        # ensure license_url/copyright are not left undefined here
         if lic_url:
             result["license_url"] = lic_url
         if cp_notice:
             result["copyright"] = cp_notice
 
-    # Fall back to scraping mvnrepository if no licence found
-    if not lic_name:
-        logger.debug("No license found in POM, attempting fallback HTML extraction")
-        fb_name, fb_url, fb_cp = _fallback_extract_license_from_html(url)
-        if fb_name and "license" not in result:
-            result["license"] = fb_name
-            result["license_source"] = "mvnrepository"
-        if fb_url and "license_url" not in result:
-            result["license_url"] = fb_url
-        if fb_cp and "copyright" not in result:
-            result["copyright"] = fb_cp
+    if cp_notice:
+        result["copyright"] = cp_notice
 
     # ensure license_source exists (None if not found)
     if "license_source" not in result:
@@ -833,7 +1091,48 @@ def analyze_maven_repository_url(url: str) -> Dict[str, Any]:
     return result
 
 
+def build_maven_repository_result(
+    analysis: Dict[str, Any],
+    input_url: str,
+    input_version: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Convert POM analysis into the application's standard success record.
+
+    A missing license is deliberately not converted into a successful record;
+    callers can then continue with repository discovery and ultimately emit an
+    ``Unknown``/``Unreachable`` result rather than a false ``Unlicensed`` one.
+    """
+
+    license_expression = analysis.get("license")
+    if not license_expression:
+        return None
+    return {
+        "input_url": input_url,
+        "repo_url": None,
+        "input_version": input_version,
+        "resolved_version": analysis.get("version"),
+        "used_default_branch": False,
+        "component_name": name or analysis.get("artifact_id"),
+        "license_files": analysis.get("pom_url") or analysis.get("license_url") or input_url,
+        "license_analysis": {
+            "license_determination_reason": "Fetched from Maven repository POM",
+            "license_source": analysis.get("license_source"),
+        },
+        "license_type": license_expression,
+        "has_license_conflict": False,
+        "readme_license": None,
+        "license_file_license": license_expression,
+        "copyright_notice": analysis.get("copyright"),
+        "status": "success",
+        "input_name": name,
+    }
+
+
 # For backwards compatibility some projects may import ``analyse_maven_repository_url``.
 # Provide an alias to avoid breaking existing users.
-def analyse_maven_repository_url(url: str) -> Dict[str, Any]:  # pragma: no cover
-    return analyze_maven_repository_url(url)
+def analyse_maven_repository_url(
+    url: str,
+    version: Optional[str] = None,
+) -> Dict[str, Any]:  # pragma: no cover
+    return analyze_maven_repository_url(url, version)

@@ -90,6 +90,117 @@ categories:
       - OFL-1.1
       - Unicode-DFS-2016
       - BlueOak-1.0.0
+      - BeOpen
+      - BeOpen-2.0
+      - GAP
+      - Spencer
+      - Inner-Net
+      - OpenSSH
+      - NeoSoft-permissive
+  # ==== 2026-08-06 依据天溯港股上市开源扫描结果补充 ====
+      - AFL-2.0
+      - AFL-2.1
+      - BSD-1-Clause
+      - BSD-2-Clause-Views
+      - BSD-3-Clause-Attribution
+      - BSD-3-Clause-No-Nuclear-Warranty
+      - BSD-4-Clause-Shortened
+      - BSD-4-Clause-UC
+      - Bitstream-Vera
+      - CC-BY-3.0-US
+      - CMU-Mach
+      - CNRI-Python
+      - FSFAP
+      - FSFUL
+      - FSFULLR
+      - FTL
+      - HPND
+      - HPND-sell-variant
+      - ICU
+      - IJG
+      - Inner-Net-2.0
+      - Intel
+      - Jam
+      - Kazlib
+      - Latex2e
+      - MIT-CMU
+      - MIT-Modern-Variant
+      - MulanPSL-2.0
+      - NTP
+      - OLDAP-2.0
+      - OLDAP-2.8
+      - OpenSSL
+      - Plexus
+      - RSA-MD
+      - SAX-PD
+      - SWL
+      - Sendmail
+      - Spencer-86
+      - Spencer-94
+      - SunPro
+      - TCL
+      - UPL-1.0
+      - Unicode-3.0
+      - Unicode-DFS-2015
+      - W3C
+      - WordNet
+      - XFree86-1.1
+      - ZPL-2.1
+      - blessing
+      - bzip2-1.0.6
+      - curl
+      - libtiff
+      - mplus
+      - Expat
+      - MIT/X11
+      - MIT-like
+      - MIT-old
+      - ISC-Original
+      - ISC-no-attribution
+      - EDL-1.0
+      - UFL-1.0
+      - Unicode-DFS-2013
+      - Unicode-DFS-2014
+      - SIL-OFL-1.1
+      - PSF
+      - Python
+      - public-domain
+      - PD
+      - PD-debian
+      - probably-PD
+      - LicenseRef-Public-Domain
+      - SDBM-PUBLIC-DOMAIN
+      - public-domain-md4
+      - public-domain-md5
+      - public-domain-sha1
+      - unencumbered
+      - CC0
+      - permissive
+      - all-permissive
+      - permissive-fsf
+      - permissive-nowarranty
+      - freely-redistributable
+      - FreeSoftware
+      - g10-permissive
+      - FSF-unlimited
+      - FSF-manpages
+      - verbatim
+      - RFC-Reference
+      - BSD
+      - BSD2
+      - BSD3
+      - OpenLDAP
+      - SSLeay
+      - Boost
+      - TinySCHEME
+      - BSLA
+      - PCRE
+      - bzip
+      - gnulib
+      - Autoconf
+      - dlmalloc
+      - mingw-runtime
+      - Khronos
 
   weak-copyleft:
     risk_level: medium
@@ -116,6 +227,22 @@ categories:
       - EUPL-1.1
       - EUPL-1.2
       - Artistic-1.0
+  # ==== 2026-08-06 依据天溯港股上市开源扫描结果补充 ====
+      - Artistic-1.0-Perl
+      - Artistic-dist
+      - Linux-man-pages-copyleft
+      - MS-PL
+      - SISSL
+      - Vim
+      - Artistic
+      - LGPL
+      - LGPLv2
+      - LGPLv3
+      - MPL
+      - MPLv2.0
+      - EPL
+      - CDDL
+      - LPGL-2.1
 
   strong-copyleft:
     risk_level: high
@@ -145,6 +272,31 @@ categories:
       - CC-BY-NC-SA-4.0
       - CC-BY-NC-ND-3.0
       - CC-BY-NC-ND-4.0
+  # ==== 2026-08-06 依据天溯港股上市开源扫描结果补充 ====
+      - GFDL-1.1-or-later
+      - GFDL-1.2-or-later
+      - GFDL-1.3-or-later
+      - GFDL-1.2-no-invariants-or-later
+      - GFDL-1.3-no-invariants-or-later
+      - GPL-2.0-with-classpath-exception
+      - SMAIL-GPL
+      - Sleepycat
+      - GPL
+      - GPLv2
+      - GPLv3
+      - AGPLv3
+      - GFDL
+      - GFDL-3
+      - GFDL-NIV
+      - GFDL-NIV-1.2
+      - GFDL-NIV-1.3
+      - GFDL-1.3+-no-invariant
+      - DONT-CHANGE-THE-GPL
+      - LicenseRef-Smail-GPL
+      - GPL-3+-WITH-BISON-EXCEPTION
+      - GPL-2+-with-link-exception
+      - GPL-2-with-font-embedding-exception
+      - LGPL-2.1+-with-link-exception
 
   proprietary:
     # Non-OSI / proprietary / unknown commercial terms.
@@ -157,6 +309,13 @@ categories:
       - UNLICENSED       # npm convention: explicitly not for use by others
       - NONE
       - Nonstandard
+      - LicenseRef-Oracle-FUTC
+  # ==== 2026-08-06 依据天溯港股上市开源扫描结果补充 ====
+      - BUSL-1.1
+      - UnRAR
+      - Unrar
+      - RSALv2
+      - noderivs
 
   unlicensed:
     # No license grant at all — treat as all-rights-reserved.
