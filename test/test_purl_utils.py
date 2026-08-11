@@ -148,7 +148,7 @@ def test_purl_to_url_unknown_type_falls_back_to_vcs_url():
 
 
 def test_purl_to_url_unknown_type_without_hints_returns_none():
-    assert purl_to_url(parse_purl("pkg:deb/debian/curl@7.50.3-1")) is None
+    assert purl_to_url(parse_purl("pkg:rpm/fedora/curl@7.50.3-1")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +206,8 @@ def test_purl_without_version_keeps_column_value():
 
 def test_unmappable_purl_passes_through_untouched():
     # 未覆盖的 type 原样透传，交给下游 LLM 兜底；version / name 仍然回填
-    url, version, name = resolve_input_ref("pkg:deb/debian/curl@7.50.3-1", None, None)
-    assert url == "pkg:deb/debian/curl@7.50.3-1"
+    url, version, name = resolve_input_ref("pkg:rpm/fedora/curl@7.50.3-1", None, None)
+    assert url == "pkg:rpm/fedora/curl@7.50.3-1"
     assert version == "7.50.3-1"
     assert name == "curl"
 
@@ -261,7 +261,7 @@ async def test_purl_rows_reach_expected_handlers(monkeypatch):
     import pandas as pd
     import api as api_module
 
-    calls = {"npm": [], "github": []}
+    calls = {"npm": [], "maven": [], "github": []}
 
     async def fake_process_npm_repository(url, version):
         calls["npm"].append((url, version))
@@ -271,8 +271,26 @@ async def test_purl_rows_reach_expected_handlers(monkeypatch):
         calls["github"].append((url, version, name))
         return {"status": "success", "license_type": "Apache-2.0"}
 
+    def fake_analyze_maven_repository_url(url, version=None):
+        calls["maven"].append((url, version))
+        return {
+            "artifact_id": "commons-lang3",
+            "version": version,
+            "license": "Apache-2.0",
+            "pom_url": (
+                "https://repo1.maven.org/maven2/org/apache/commons/"
+                "commons-lang3/3.12.0/commons-lang3-3.12.0.pom"
+            ),
+            "license_source": "maven_central",
+        }
+
     monkeypatch.setattr(api_module, "process_npm_repository", fake_process_npm_repository)
     monkeypatch.setattr(api_module, "process_github_repository", fake_process_github_repository)
+    monkeypatch.setattr(
+        api_module,
+        "analyze_maven_repository_url",
+        fake_analyze_maven_repository_url,
+    )
 
     df = pd.DataFrame([
         {"github_url": "pkg:npm/%40babel/core@7.24.0", "version": None, "name": None},
@@ -286,13 +304,60 @@ async def test_purl_rows_reach_expected_handlers(monkeypatch):
     assert len(results) == 3
     # npm purl -> npm handler，版本来自 purl
     assert calls["npm"] == [("https://www.npmjs.com/package/@babel/core", "7.24.0")]
-    # maven purl -> GitHub 主流程（与今天喂 mvnrepository URL 时一致）
-    assert ("https://mvnrepository.com/artifact/org.apache.commons/commons-lang3",
-            "3.12.0", "commons-lang3") in calls["github"]
+    # maven purl -> 原仓库 POM 优先，版本来自 purl
+    assert calls["maven"] == [(
+        "https://mvnrepository.com/artifact/org.apache.commons/commons-lang3",
+        "3.12.0",
+    )]
     # 普通 URL 行为不变
     assert ("https://github.com/foo/bar", "1.0.0", "bar") in calls["github"]
     # 输出里的 input_url 仍是用户原始输入（purl 原文）
     assert results[0]["input_url"] == "pkg:npm/%40babel/core@7.24.0"
+
+
+# ---------------------------------------------------------------------------
+# 未覆盖 type 透传后的收尾行为：必须干净地 skipped，不能抛异常
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unmappable_purl_returns_skipped_when_llm_finds_nothing(monkeypatch):
+    """pkg:deb/... 这类透传输入在 LLM 查不到仓库时应返回 skipped。
+
+    回归用例：原先查找失败会回落到原始输入，把 purl 送进 parse_github_url
+    并抛 "Not a GitHub URL"，整行变成 error。
+    """
+    import core.github_utils as gh
+
+    async def fake_lookup(package_url, name=None):
+        return None
+
+    monkeypatch.setattr(gh, "find_github_url_from_package_url", fake_lookup)
+
+    result = await gh.process_github_repository(
+        None, "pkg:deb/adduser@3.137ubuntu1", "3.137ubuntu1", name="adduser"
+    )
+
+    assert result["status"] == "skipped"
+    assert result["input_url"] == "pkg:deb/adduser@3.137ubuntu1"
+    assert result["repo_url"] is None
+    assert "could not find" in result["license_determination_reason"].lower()
+
+
+@pytest.mark.asyncio
+async def test_non_github_llm_answer_is_treated_as_not_found(monkeypatch):
+    """LLM 返回非 GitHub 地址时同样按未找到处理，而不是继续解析。"""
+    import core.github_utils as gh
+
+    async def fake_lookup(package_url, name=None):
+        return "https://gitlab.com/foo/bar"
+
+    monkeypatch.setattr(gh, "find_github_url_from_package_url", fake_lookup)
+
+    result = await gh.process_github_repository(
+        None, "pkg:conan/zlib@1.3", None, name="zlib"
+    )
+
+    assert result["status"] == "skipped"
 
 
 # ---------------------------------------------------------------------------

@@ -732,7 +732,8 @@ async def construct_copyright_notice_async(year: str, owner: str, repo: str, ref
 def get_concluded_license(
     license_type: Optional[str], 
     readme_license: Optional[str] = None, 
-    license_file_license: Optional[str] = None
+    license_file_license: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> str:
     """
     确定最终的许可证类型。
@@ -741,7 +742,8 @@ def get_concluded_license(
     处理规则：
     1. 任何值为 None、NaN、"NOASSERTION" 的许可证视为无效
     2. 按优先级选择第一个有效的许可证
-    3. 如果没有有效许可证则返回 "Unlicensed"
+    3. 如果分析失败则返回 "Unreachable"，如果跳过/无法判断则返回 "Unknown"
+    4. 只有分析正常完成但没有任何有效许可证证据时才返回 "Unlicensed"
     """
     def is_valid_license(lic: Any) -> bool:
         """判断许可证值是否有效"""
@@ -766,6 +768,12 @@ def get_concluded_license(
     
     if is_valid_license(license_type):
         return str(license_type).strip()
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status == "error":
+        return "Unreachable"
+    if normalized_status == "skipped":
+        return "Unknown"
 
     return "Unlicensed"
 
@@ -1240,6 +1248,57 @@ def parse_purl(value: Any) -> Optional[ParsedPurl]:
         return None
 
 
+# Debian / Ubuntu 常见发行代号，用于在 purl 未给出 namespace 时判定发行版。
+# 只需覆盖仍在用的版本；判定不出来时调用方会两个发行版都试一次。
+_UBUNTU_SERIES = {
+    "trusty", "xenial", "bionic", "focal", "impish", "jammy", "kinetic",
+    "lunar", "mantic", "noble", "oracular", "plucky", "questing",
+}
+_DEBIAN_SERIES = {
+    "wheezy", "jessie", "stretch", "buster", "bullseye", "bookworm",
+    "trixie", "forky", "sid", "unstable", "stable", "testing", "experimental",
+}
+
+
+def infer_deb_vendor(
+    namespace: Optional[str] = None,
+    version: Optional[str] = None,
+    qualifiers: Optional[Dict[str, str]] = None,
+) -> str:
+    """推断 deb 包属于 Debian 还是 Ubuntu，返回 ``"debian"`` / ``"ubuntu"``。
+
+    判定顺序：purl 的 namespace > distro qualifier > 版本号特征。
+    这只是一个起点——调用方在此发行版查不到时会自动尝试另一个，
+    因此判错不会导致失败，只是多一次请求。
+    """
+    if namespace:
+        ns = namespace.strip().lower()
+        if "ubuntu" in ns:
+            return "ubuntu"
+        if "debian" in ns:
+            return "debian"
+
+    distro = ((qualifiers or {}).get("distro") or "").strip().lower()
+    if distro:
+        if "ubuntu" in distro:
+            return "ubuntu"
+        if "debian" in distro:
+            return "debian"
+        # distro 常写成发行代号，如 distro=jammy / distro=bookworm
+        series = distro.split("-")[0]
+        if series in _UBUNTU_SERIES:
+            return "ubuntu"
+        if series in _DEBIAN_SERIES:
+            return "debian"
+
+    # Ubuntu 的 revision 里一定带 "ubuntu"（如 3.137ubuntu1）；
+    # Debian 的安全更新则形如 1.2.3-4+deb12u1
+    ver = (version or "").strip().lower()
+    if "ubuntu" in ver:
+        return "ubuntu"
+    return "debian"
+
+
 def _normalize_vcs_url(vcs_url: str) -> Optional[str]:
     """把 SBOM 常见的 vcs_url 归一为可直接访问的仓库地址。
 
@@ -1293,6 +1352,13 @@ def purl_to_url(purl: ParsedPurl) -> Optional[str]:
         return f"https://www.nuget.org/packages/{name}"
     if t == "github":
         return f"https://github.com/{ns}/{name}" if ns else None
+    if t == "deb":
+        # 发行版判定只是起点，deb_utils 在此发行版查不到时会自动换另一个
+        vendor = infer_deb_vendor(ns, purl.version, purl.qualifiers)
+        version_segment = f"/{purl.version}" if purl.version else ""
+        if vendor == "ubuntu":
+            return f"https://launchpad.net/ubuntu/+source/{name}{version_segment}"
+        return f"https://sources.debian.org/src/{name}{version_segment}/"
 
     # generic 及未覆盖的 type：优先用 qualifier 里显式给出的下载 / 仓库地址，
     # 命中后可复用归档兜底或 GitHub 主流程，避免无谓的 LLM 查找。

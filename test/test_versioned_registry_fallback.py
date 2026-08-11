@@ -10,7 +10,13 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.go_utils import extract_module_path, build_versioned_pkggo_license_url
-from core.maven_utils import build_versioned_maven_license_url
+from core.maven_utils import (
+    analyze_maven_repository_url,
+    build_maven_repository_result,
+    build_versioned_maven_license_url,
+    is_maven_repository_url,
+    parse_maven_repository_location,
+)
 
 
 class TestExtractModulePath:
@@ -208,6 +214,127 @@ class TestBuildVersionedMavenLicenseUrlEdgeCases:
         assert url is None
 
 
+class TestGenericMavenRepositoryUrl:
+    POM_WITH_APACHE_LICENSE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>org.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.2.3</version>
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+    </license>
+  </licenses>
+</project>
+"""
+
+    def test_parse_repo_maven_apache_url(self):
+        location = parse_maven_repository_location(
+            "https://repo.maven.apache.org/maven2/javax/persistence/persistence-api/1.0/"
+        )
+        assert location.gav.group_id == "javax.persistence"
+        assert location.gav.artifact_id == "persistence-api"
+        assert location.gav.version == "1.0"
+        assert location.repository_base_url == "https://repo.maven.apache.org/maven2"
+        assert location.pom_url.endswith(
+            "/javax/persistence/persistence-api/1.0/persistence-api-1.0.pom"
+        )
+
+    def test_parse_tencent_maven_mirror_url(self):
+        location = parse_maven_repository_location(
+            "https://mirrors.tencent.com/repository/maven/tencent_public/"
+            "com/tencent/secapi/scurl/0.0.10/"
+        )
+        assert location.gav.group_id == "com.tencent.secapi"
+        assert location.gav.artifact_id == "scurl"
+        assert location.gav.version == "0.0.10"
+        assert location.repository_base_url == (
+            "https://mirrors.tencent.com/repository/maven/tencent_public"
+        )
+
+    def test_parse_nexus_repository_url(self):
+        location = parse_maven_repository_location(
+            "https://mirrors.tencent.com/nexus/repository/maven-public/"
+            "com/tencent/beacon/common/cos-utils/1.3.0.8/"
+        )
+        assert location.gav.group_id == "com.tencent.beacon.common"
+        assert location.gav.artifact_id == "cos-utils"
+        assert location.gav.version == "1.3.0.8"
+        assert location.repository_base_url == (
+            "https://mirrors.tencent.com/nexus/repository/maven-public"
+        )
+
+    def test_configured_private_repository_root(self, monkeypatch):
+        monkeypatch.setenv(
+            "MAVEN_REPOSITORY_BASE_URLS",
+            "https://packages.example.test/artifactory/libs-release",
+        )
+        location = parse_maven_repository_location(
+            "https://packages.example.test/artifactory/libs-release/"
+            "org/example/demo/1.2.3/demo-1.2.3.jar"
+        )
+        assert location.gav.group_id == "org.example"
+        assert location.gav.artifact_id == "demo"
+        assert location.gav.version == "1.2.3"
+        assert location.repository_base_url == (
+            "https://packages.example.test/artifactory/libs-release"
+        )
+
+    def test_generic_maven_detection_is_narrow(self):
+        assert is_maven_repository_url(
+            "https://repo.maven.apache.org/maven2/org/example/demo/1.2.3/"
+        )
+        assert is_maven_repository_url(
+            "https://repo.example.test/repository/releases/org/example/demo/1.2.3/"
+        )
+        assert not is_maven_repository_url("https://example.com/not-a-maven-package")
+
+    def test_analysis_fetches_original_repository_pom_first(self):
+        pom_url = (
+            "https://repo.maven.apache.org/maven2/org/example/demo/1.2.3/"
+            "demo-1.2.3.pom"
+        )
+        with patch(
+            "core.maven_utils._http_get",
+            return_value=(self.POM_WITH_APACHE_LICENSE, 200),
+        ) as mock_get, patch(
+            "core.maven_utils._convert_licenses_to_spdx",
+            return_value="Apache-2.0",
+        ):
+            analysis = analyze_maven_repository_url(
+                "https://repo.maven.apache.org/maven2/org/example/demo/1.2.3/"
+            )
+
+        mock_get.assert_called_once_with(pom_url)
+        assert analysis["license"] == "Apache-2.0"
+        assert analysis["license_source"] == "maven_central"
+        assert analysis["pom_url"] == pom_url
+
+    def test_standard_result_requires_license_evidence(self):
+        assert build_maven_repository_result(
+            {"artifact_id": "demo", "version": "1.2.3", "license": None},
+            "https://repo.example.test/repository/releases/org/example/demo/1.2.3/",
+        ) is None
+
+        result = build_maven_repository_result(
+            {
+                "artifact_id": "demo",
+                "version": "1.2.3",
+                "license": "Apache-2.0",
+                "pom_url": "https://repo.example.test/demo-1.2.3.pom",
+                "license_source": "maven_repository_pom",
+            },
+            "https://repo.example.test/repository/releases/org/example/demo/1.2.3/",
+        )
+        assert result is not None
+        assert result["status"] == "success"
+        assert result["license_type"] == "Apache-2.0"
+        assert result["license_files"] == "https://repo.example.test/demo-1.2.3.pom"
+
+
 class _ReachResp:
     def __init__(self, status=200, exc=None):
         self.status = status
@@ -398,13 +525,24 @@ class TestPypiVersionedFallbackGating:
 class TestMainDispatchGating:
     """通过 main.process_all_repos 驱动真实分发路径，验证 Maven / Go 分支的门控。"""
 
-    async def _run_row(self, row, github_result, reachable=True, proxy_status_map=None):
+    async def _run_row(
+        self,
+        row,
+        github_result,
+        reachable=True,
+        proxy_status_map=None,
+        maven_analysis=None,
+    ):
         import pandas as pd
         from main import process_all_repos
 
         df = pd.DataFrame([row])
         session = _FakeSession(proxy_status_map or {})
         with patch("main.process_github_repository", new=AsyncMock(return_value=dict(github_result))), \
+             patch(
+                 "main.analyze_maven_repository_url",
+                 return_value=maven_analysis or {"license": None},
+             ), \
              patch("main.get_github_url_from_pkggo", new=AsyncMock(
                  return_value={"github_url": "https://github.com/uber-go/atomic"})), \
              patch("core.utils.is_url_reachable", new=AsyncMock(return_value=reachable)), \
@@ -412,6 +550,23 @@ class TestMainDispatchGating:
             results = await process_all_repos(api=MagicMock(), df=df, max_concurrency=1)
         assert len(results) == 1
         return results[0]
+
+    @pytest.mark.asyncio
+    async def test_maven_pom_license_takes_precedence_over_github(self):
+        pom_url = "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.pom"
+        result = await self._run_row(
+            {"github_url": "https://mvnrepository.com/artifact/org.slf4j/slf4j-api", "version": "1.7.36"},
+            _github_result_fixture(False, "https://github.com/qos-ch/slf4j/blob/v_1.7.36/LICENSE.txt"),
+            maven_analysis={
+                "artifact_id": "slf4j-api",
+                "version": "1.7.36",
+                "license": "MIT",
+                "pom_url": pom_url,
+                "license_source": "maven_central",
+            },
+        )
+        assert result["license_files"] == pom_url
+        assert result["license_type"] == "MIT"
 
     @pytest.mark.asyncio
     async def test_maven_no_tag_uses_versioned_registry_link(self):

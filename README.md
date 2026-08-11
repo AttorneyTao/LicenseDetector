@@ -80,6 +80,7 @@ USE_LLM=true  # 启用/禁用LLM分析
 HTTP_PROXY=http://127.0.0.1:7897  # HTTP代理配置
 HTTPS_PROXY=http://127.0.0.1:7897  # HTTPS代理配置
 DASHSCOPE_API_KEY=your_qwen_api_key  # 备用LLM配置
+MAVEN_REPOSITORY_BASE_URLS=https://repo.example.com/repository/releases  # 可选；多个私服根地址用逗号分隔
 ```
 
 ### 2. 安装依赖
@@ -113,13 +114,26 @@ pip install -e .
 | `pkg:pub/http@1.2.0` | `https://pub.dev/packages/http` |
 | `pkg:nuget/Newtonsoft.Json@13.0.3` | `https://www.nuget.org/packages/Newtonsoft.Json` |
 | `pkg:github/torvalds/linux@v6.1` | `https://github.com/torvalds/linux` |
+| `pkg:deb/adduser@3.137ubuntu1` | `https://launchpad.net/ubuntu/+source/adduser/3.137ubuntu1` |
+| `pkg:deb/debian/curl@8.21.0-2` | `https://sources.debian.org/src/curl/8.21.0-2/` |
 | `pkg:generic/openssl@3.0.0?download_url=...` | qualifier 中的 `download_url`（走源码包下载分析） |
 
 说明：
 
 - purl 自带的 `@版本` 与包名会自动回填到 `version` / `name`；与列中已填的值冲突时**以 purl 为准**，并在日志中记录 WARNING。
-- 未覆盖的 purl type（如 `pkg:deb`、`pkg:conan`）会原样透传，走 LLM 查找 GitHub 仓库的兜底逻辑；若 purl 带有 `download_url` 或 `vcs_url` qualifier，则优先使用该地址。
+- 未覆盖的 purl type（如 `pkg:rpm`、`pkg:conan`）会原样透传，走 LLM 查找 GitHub 仓库的兜底逻辑；若 purl 带有 `download_url` 或 `vcs_url` qualifier，则优先使用该地址。
 - 普通 URL 输入的行为完全不变。
+
+#### Debian / Ubuntu（deb）包的处理方式
+
+deb 是少数拥有**强制性机器可读许可证元数据**的生态，因此这条路径以确定性解析为主，LLM 只作兜底：
+
+1. **判定发行版**：purl 的 namespace（`pkg:deb/debian/…`）优先，其次看 `?distro=` qualifier，再看版本号特征（含 `ubuntu` 即 Ubuntu）。判定不出或查不到时会自动尝试另一个发行版。
+2. **解析源码包与版本**：Ubuntu 走 Launchpad API，Debian 走 sources.debian.org API，同时取到 `component` / `area`。SBOM 里常见的**二进制包名**会映射回源码包（如 `libssl3` → `openssl`）——Ubuntu 经 Launchpad build 资源，Debian 经 ftp-master madison（snapshot.debian.org 备用）。
+3. **下载 `debian/copyright` 原文**，每个发行版都配了主源与备用源。
+4. **确定性解析 DEP-5**：`Files: *` 段的 `License:` 是主许可证，其余段是内嵌第三方许可证，用 `AND` 合成 SPDX 表达式；`Copyright:` 直接作为版权声明；头部 `Source:` 填入 `repo_url`。Debian 的短名（`GPL-2+`、`Expat`、`BSD-3-clause`…）经映射表转 SPDX，未收录的短名原样保留、风险等级落到"未知"，便于后续补表。只有 copyright 文件不是 DEP-5 格式（老包为自由文本）或解析不出许可证时，才把原文交给 LLM。
+
+`license_files` 输出的是带版本的 copyright 文件地址，可直接作为核查证据。注意 epoch 处理在两边是相反的：Ubuntu 的 pool 路径与 Debian 的 metadata 备用源不含 epoch，而 sources.debian.org 的 data 路径必须保留 epoch。
 
 
 ### 4. 运行分析

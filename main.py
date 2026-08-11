@@ -44,6 +44,13 @@ from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import process_crate_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
+from core.deb_utils import is_deb_package_url, process_deb_package
+from core.maven_utils import (
+    analyze_maven_repository_url,
+    build_maven_repository_result,
+    build_versioned_maven_license_url,
+    is_maven_repository_url,
+)
 
 # ============================================================================
 # Load Prompts Section
@@ -185,7 +192,6 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     running_tasks += 1
                     logger.info(f"当前并发任务数: {running_tasks}")
 
-                    from core.maven_utils import analyze_maven_repository_url
                     original_url = row["github_url"]  # 保存原始URL
                     # purl 输入在此翻译为对应生态的注册表 URL，并回填 version / name
                     url, version, name = resolve_input_ref(
@@ -271,72 +277,39 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     elif is_crate_pkg:
                         logger.info(f"检测到 crate.io 包 URL: {url}，调用 crate_utils 处理")
                         result = await process_crate_repository(url, version)
-                    
+
+                    elif is_deb_package_url(url):
+                        logger.info(f"检测到 Debian/Ubuntu 包 URL: {url}，调用 deb_utils 处理")
+                        result = await process_deb_package(url, version, name)
+
                     else:
-                        # 修改：对于 Maven URL（包括 mvnrepository.com 和 repo1.maven.org），先走默认的 GitHub 流程
-                        is_maven_url = isinstance(url, str) and (
-                            "mvnrepository.com/artifact" in url or 
-                            "repo1.maven.org/maven2" in url
-                        )
-                        if is_maven_url:
-                            logger.info(f"检测到 Maven URL: {url}，先尝试 GitHub 流程")
-                            result = await process_github_repository(
-                                api,
-                                url,
-                                version,
-                                name=name
-                            )
+                        if is_maven_repository_url(url, version):
+                            logger.info(f"检测到 Maven URL: {url}，优先分析原始仓库 POM")
+                            result = None
+                            try:
+                                maven_analysis = analyze_maven_repository_url(url, version)
+                                result = build_maven_repository_result(
+                                    maven_analysis,
+                                    original_url,
+                                    version,
+                                    name,
+                                )
+                            except Exception as e:
+                                logger.warning(f"Maven POM 分析失败: {e}")
 
-                            # GitHub 成功但无对应版本 tag 时，license_files 改用
-                            # mvnrepository 带版本链接（版本经 repo1.maven.org 校验）
-                            if result.get("status") == "success" and result.get("used_default_branch"):
-                                from core.maven_utils import build_versioned_maven_license_url
-                                versioned_url = await build_versioned_maven_license_url(url, version)
-                                if versioned_url:
-                                    logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
-                                    result["license_files"] = versioned_url
-
-                            # 如果 GitHub 流程不成功，再调用 Maven 处理函数
-                            if result.get("status") != "success":
-                                logger.info(f"GitHub 流程未成功，调用 Maven 处理函数")
-                                try:
-                                    from core.maven_utils import analyze_maven_repository_url
-                                    maven_result = analyze_maven_repository_url(url)
-                                    
-                                    # 转换 Maven 结果为标准格式
-                                    license_file_url = f"https://mvnrepository.com/artifact/{maven_result['group_id']}/{maven_result['artifact_id']}/{maven_result.get('version', '')}"
-                                    
-                                    # 修复：正确处理copyright信息
-                                    copyright_notice = maven_result.get('copyright')
-                                    if not copyright_notice:
-                                        # 如果没有从Maven结果中获取到copyright，构造一个默认的
-                                        org_parts = maven_result['group_id'].split(".")
-                                        orgname = org_parts[1] if len(org_parts) > 1 else org_parts[0]
-                                        copyright_notice = f"Copyright (c) {datetime.now().year} {orgname.capitalize()}"
-                                    
-                                    result = {
-                                        "input_url": original_url,  # 使用原始URL
-                                        "repo_url": None,
-                                        "input_version": version,
-                                        "resolved_version": maven_result.get('version'),
-                                        "used_default_branch": False,
-                                        "component_name": name or maven_result['artifact_id'],
-                                        "license_files": license_file_url,
-                                        "license_analysis": {
-                                            "license_determination_reason": "Fetched from Maven Central POM",
-                                            "license_source": maven_result.get('license_source', 'maven_central')
-                                        },
-                                        "license_type": maven_result.get('license'),
-                                        "has_license_conflict": False,
-                                        "readme_license": None,
-                                        "license_file_license": maven_result.get('license'),
-                                        "copyright_notice": copyright_notice,  # 修复：正确使用从Maven结果中获取的copyright
-                                        "status": "success",
-                                        "input_name": name,
-                                    }
-                                except Exception as e:
-                                    logger.warning(f"Maven 处理失败: {e}")
-                                    # 保持原来的错误结果
+                            if result is None:
+                                logger.info("POM 未提供许可证，回退至源码仓库发现流程")
+                                result = await process_github_repository(
+                                    api,
+                                    url,
+                                    version,
+                                    name=name,
+                                )
+                                if result.get("status") == "success" and result.get("used_default_branch"):
+                                    versioned_url = await build_versioned_maven_license_url(url, version)
+                                    if versioned_url:
+                                        logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
+                                        result["license_files"] = versioned_url
                         else:
                             # 非 Maven URL，直接走原来的 GitHub 流程
                             result = await process_github_repository(
@@ -535,7 +508,8 @@ async def main_async(font_mode: bool = False):
             lambda row: get_concluded_license(
                 row.get('license_type'),
                 row.get('readme_license'),
-                row.get('license_file_license')
+                row.get('license_file_license'),
+                row.get('status'),
             ),
             axis=1
         )
@@ -681,5 +655,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
