@@ -1672,6 +1672,21 @@ async def process_github_repository(
         license_files_detailed = find_license_files_detailed(path_map, sub_path, license_keywords)
         substep_logger.info(f"Found {len(license_files_detailed)} license files in subpath")
 
+        # sub_path 多来自包管理器元数据（如 npm repository.directory），反映的是仓库
+        # 当前布局；在解析出的历史版本 ref 下该路径可能不存在（包后来被移动/改名，
+        # 如 aws-sdk-js-v3 的 packages/ → packages-internal/）。此时退回按组件名定位，
+        # 而不是直接用仓库根 LICENSE。
+        if sub_path and not license_files_detailed and name:
+            substep_logger.info(
+                f"No license files under sub_path '{sub_path}' at ref {resolved_version}; "
+                f"falling back to component-name dir location"
+            )
+            sub_path = ""
+            license_files_detailed = find_license_files_detailed(path_map, sub_path, license_keywords)
+            # thirdparty_dirs 之前按失效的 sub_path 收窄过，恢复为全仓库顶层，
+            # 后续 Step 9.5 命中组件目录时会重新收窄
+            thirdparty_dirs = find_top_level_thirdparty_dirs(tree)
+
         # Step 9.5: For root-level URLs with a known component name, locate the subdir
         # whose license governs THIS component. Repos organize per-component licenses in
         # arbitrary ways (packages/<name>, packages/@scope/<name>, libs/<name>, ...), so we
