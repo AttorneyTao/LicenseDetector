@@ -584,8 +584,11 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     # repository 字段兼容
     repo_field = version_obj.get("repository")
     repo_url = None
+    repo_directory = None
     if isinstance(repo_field, dict):
         repo_url = repo_field.get("url")
+        # monorepo 子包定位信息（如 aws-sdk-js-v3 的 packages-internal/xxx）
+        repo_directory = repo_field.get("directory")
     elif isinstance(repo_field, str):
         repo_url = repo_field
     if repo_url and repo_url.startswith("git+"):
@@ -594,7 +597,7 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
         repo_url = repo_url[:-4]
     if repo_url and repo_url.startswith("git@github.com:"):
         repo_url = repo_url.replace("git@github.com:", "https://github.com/")
-    logger.debug("Parsed repo_url: %s", repo_url)
+    logger.debug("Parsed repo_url: %s (directory=%s)", repo_url, repo_directory)
 
     license_type = version_obj.get("license")
     # npm 元数据里声明的许可证来自该版本自己的 package.json，是"包+版本"级别的声明；
@@ -688,12 +691,29 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
             parsed = urlparse(repo_url)
             path_parts = parsed.path.strip("/").split("/")
             if len(path_parts) >= 2:
-                github_url = f"https://github.com/{path_parts[0]}/{path_parts[1]}"
+                repo_root_url = f"https://github.com/{path_parts[0]}/{path_parts[1]}"
+                # monorepo 子目录定位（优先级：repo_url 自带的 tree 路径 >
+                # homepage 的 tree 路径 > repository.directory 构造）。
+                # 不带子目录时 GitHub 流程只会分析仓库根 LICENSE，对 monorepo
+                # 子包会张冠李戴（根 LICENSE 覆盖的是整个仓库而非本包）。
+                if len(path_parts) > 2 and path_parts[2] in ("tree", "blob"):
+                    github_url = repo_url  # repo_url 本身已含子目录信息
+                else:
+                    github_url = repo_root_url
+                    homepage = version_obj.get("homepage") or ""
+                    if isinstance(homepage, str) and "github.com" in homepage and "/tree/" in homepage:
+                        github_url = homepage.split("#", 1)[0].split("?", 1)[0]
+                    elif repo_directory:
+                        # HEAD 仅为定位 sub_path 的占位 ref，实际分析用解析出的版本
+                        github_url = f"{repo_root_url}/tree/HEAD/{repo_directory.strip('/')}"
+                if github_url != repo_root_url:
+                    logger.info("monorepo subdirectory detected, using: %s", github_url)
                 api = GitHubAPI()
                 github_result = await process_github_repository(
                     api,
                     github_url,
                     resolved_version,
+                    name=pkg_name,
                 )
                 github_scan_success = github_result.get("status") == "success"
                 if not github_scan_success:

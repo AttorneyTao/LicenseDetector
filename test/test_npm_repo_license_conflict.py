@@ -116,7 +116,7 @@ async def _run_npm(monkeypatch, declared_license, repo_license, tarball_license=
     github_result = dict(MIT_REPO_RESULT, license_file_license=repo_license)
     analyzed = []
 
-    async def fake_github(api, url, version):
+    async def fake_github(api, url, version, **kwargs):
         return github_result
 
     async def fake_tarball(tarball_url):
@@ -204,3 +204,93 @@ async def test_repo_license_superset_is_not_a_conflict(monkeypatch):
 
     assert result["license_file_license"] == "MIT AND Apache-2.0"
     assert result["license_determination_reason"] == "Fetched from GitHub repository"
+
+
+# ---------------------------------------------------------------------------
+# monorepo 子目录定位：repository.directory / homepage tree URL 应传给
+# GitHub 流程，而不是只传仓库根地址（否则子包会拿到根 LICENSE，张冠李戴）
+# ---------------------------------------------------------------------------
+
+def _monorepo_packument(directory=None, homepage=None, repo_url="git+https://github.com/aws/aws-sdk-js-v3.git"):
+    repository = {"type": "git", "url": repo_url}
+    if directory:
+        repository["directory"] = directory
+    version_obj = {
+        "name": "@aws-sdk/credential-provider-node",
+        "version": "3.972.75",
+        "license": "Apache-2.0",
+        "repository": repository,
+        "author": {"name": "AWS"},
+    }
+    if homepage:
+        version_obj["homepage"] = homepage
+    return {
+        "dist-tags": {"latest": "3.972.75"},
+        "time": {"3.972.75": "2026-09-01T00:00:00Z"},
+        "versions": {"3.972.75": version_obj},
+    }
+
+
+async def _capture_github_call(monkeypatch, packument):
+    """跑一遍 npm 流程，捕获传给 process_github_repository 的 URL 与 name。"""
+    from core import npm_utils
+    import core.github_utils as github_utils
+
+    captured = {}
+
+    async def fake_github(api, url, version, **kwargs):
+        captured["url"] = url
+        captured["name"] = kwargs.get("name")
+        return {
+            "status": "success",
+            "used_default_branch": False,
+            "license_files": "https://github.com/aws/aws-sdk-js-v3/blob/v3.973.0/packages-internal/credential-provider-node/LICENSE",
+            "license_file_license": "Apache-2.0",
+            "copyright_notice": "Copyright Amazon.com",
+        }
+
+    monkeypatch.setattr(npm_utils, "_fetch_packument", lambda name: packument)
+    monkeypatch.setattr(npm_utils, "fetch_npm_readme_simple", lambda *a, **k: "")
+    monkeypatch.setattr(github_utils, "process_github_repository", fake_github)
+    monkeypatch.setattr(github_utils, "GitHubAPI", lambda *a, **k: object())
+
+    result = await npm_utils.process_npm_repository(
+        "https://www.npmjs.com/package/@aws-sdk/credential-provider-node/v/3.972.75",
+        "3.972.75",
+    )
+    return result, captured
+
+
+@pytest.mark.asyncio
+async def test_monorepo_directory_from_repository_field(monkeypatch):
+    """repository.directory 存在时，应拼成 tree URL 传入 GitHub 子目录流程。"""
+    result, captured = await _capture_github_call(
+        monkeypatch, _monorepo_packument(directory="packages-internal/credential-provider-node")
+    )
+    assert captured["url"].endswith("/tree/HEAD/packages-internal/credential-provider-node")
+    assert captured["name"] == "@aws-sdk/credential-provider-node"
+    # 子目录 LICENSE 成为最终 license_files
+    assert "packages-internal/credential-provider-node/LICENSE" in result["license_files"]
+
+
+@pytest.mark.asyncio
+async def test_monorepo_homepage_tree_url_preferred(monkeypatch):
+    """homepage 自带 tree 路径时优先于 repository.directory（含真实分支名）。"""
+    result, captured = await _capture_github_call(
+        monkeypatch,
+        _monorepo_packument(
+            directory="packages-internal/credential-provider-node",
+            homepage="https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-node",
+        ),
+    )
+    assert captured["url"] == (
+        "https://github.com/aws/aws-sdk-js-v3/tree/main/packages-internal/credential-provider-node"
+    )
+
+
+@pytest.mark.asyncio
+async def test_plain_repo_without_directory_unchanged(monkeypatch):
+    """无 directory / homepage tree 时保持仓库根 URL，行为不变（回归保护）。"""
+    result, captured = await _capture_github_call(monkeypatch, _monorepo_packument())
+    assert captured["url"] == "https://github.com/aws/aws-sdk-js-v3"
+    assert captured["name"] == "@aws-sdk/credential-provider-node"
