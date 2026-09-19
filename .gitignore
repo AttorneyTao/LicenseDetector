@@ -22,7 +22,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-test*.py
+/test*.py
 search_log.py
 # Virtual Environment
 venv/

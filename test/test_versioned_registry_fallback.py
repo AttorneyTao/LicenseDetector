@@ -496,7 +496,8 @@ class TestPypiVersionedFallbackGating:
         blob = "https://github.com/foo/bar/blob/master/LICENSE"
         result, _ = await self._run(_github_result_fixture(True, blob))
         assert result["status"] == "success"
-        assert result["license_files"] == "https://pypi.org/project/foo-pkg/1.0.0/#files"
+        # Description 页（含许可证分类器与 README），不是只列构件的 Files 页
+        assert result["license_files"] == "https://pypi.org/project/foo-pkg/1.0.0/"
         # 其余字段仍取自 GitHub 分析
         assert result["license_type"] == "MIT"
         assert result["license_file_license"] == "MIT"
@@ -519,7 +520,8 @@ class TestPypiVersionedFallbackGating:
              patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)):
             result = await process_pypi_repository("https://pypi.org/project/foo-pkg/", "1.0.0")
         assert result["status"] == "success"
-        assert result["license_files"] == "https://pypi.org/project/foo-pkg/1.0.0/#files"
+        # Description 页（含许可证分类器与 README），不是只列构件的 Files 页
+        assert result["license_files"] == "https://pypi.org/project/foo-pkg/1.0.0/"
 
 
 class TestMainDispatchGating:

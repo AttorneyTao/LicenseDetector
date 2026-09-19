@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 import time
 import logging
 import requests
@@ -30,6 +31,154 @@ def _parse_package_name(url: str) -> str:
     except Exception as e:
         logger.error(f"Failed to parse package name from URL {url}: {str(e)}")
         return ""
+
+# ---------------------------------------------------------------------------
+# GitHub 仓库 URL 提取
+#
+# PyPI 元数据的 project_urls 是一个混杂字典：既有 Source/Repository/Homepage 这类
+# 真正的仓库地址，也有 Funding（github.com/sponsors/<user>）、Issues、Wiki、
+# Documentation 等非仓库页面。「取第一个值里含 github.com 的 URL」会把赞助页当
+# 仓库，GitHub 流程解析失败后静默回落到 PyPI 元数据，丢失 LICENSE 全文与版权声明。
+# 因此改为按 key 优先级挑选 + 规范化校验，只接受 github.com/owner/repo 形态。
+# ---------------------------------------------------------------------------
+
+# GitHub 站点上不是仓库的一级路径（/sponsors/xxx、/topics/xxx ...）
+_GITHUB_RESERVED_TOP_SEGMENTS = {
+    "sponsors", "topics", "features", "orgs", "settings", "notifications",
+    "marketplace", "explore", "pricing", "login", "join", "about", "security",
+    "enterprise", "team", "readme", "collections", "trending", "events",
+    "search", "apps", "account", "sessions", "users", "site", "blog",
+    "customer-stories", "solutions", "resources", "contact", "sponsors-explore",
+}
+
+# 仓库下的非仓库尾段：/owner/repo/issues、/wiki、/blob ... 一律收敛到仓库根
+_GITHUB_NON_REPO_SUFFIXES = {
+    "issues", "issue", "pulls", "pull", "wiki", "discussions", "discussion",
+    "releases", "tags", "actions", "graphs", "network", "compare", "commits",
+    "blob", "raw", "archive", "pulse", "contributors", "deployments",
+    "environments", "projects", "insights", "labels", "milestones", "stars",
+    "forks", "watchers", "activity", "branches", "stargazers", "subscribers",
+}
+
+# project_urls 里优先采信的 key（命中即排在最前）
+_REPO_URL_KEY_PRIORITY = (
+    "source", "sourcecode", "source code", "repository", "repo", "code",
+    "github", "homepage", "home", "project home", "project",
+    "源码", "源代码", "仓库", "项目主页", "主页",
+)
+
+# project_urls 里需要降权的 key：通常不是仓库，但部分包（如 sqlalchemy）的
+# "Issue Tracker" 恰恰指向仓库根，因此不丢弃、只降到最低优先级——URL 形态校验
+# （是否为 github.com/owner/repo）比 key 名更可靠。
+_DEPRECATED_URL_KEY_HINTS = (
+    "funding", "sponsor", "sponsors", "donate", "donation", "issue", "issues",
+    "bug", "bugs", "tracker", "wiki", "discussion", "documentation", "docs",
+    "changelog", "change log", "release notes", "download", "downloads",
+)
+
+_GITHUB_URL_IN_TEXT_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+    r"(?:/[^\s\"'<>)\]]*)?",
+    re.IGNORECASE,
+)
+
+
+def _normalize_github_repo_url(raw: str) -> Optional[str]:
+    """把任意形态的 GitHub 链接规范化为 https://github.com/owner/repo[/tree/...]。
+
+    非仓库地址（赞助页、issues/wiki 页、docs.github.com、单段用户页等）返回 None。
+    返回 None 表示"这不是一个可用的仓库地址"，调用方应继续尝试下一个候选。
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+
+    if text.startswith("git+"):
+        text = text[4:]
+    if text.startswith("git@github.com:"):
+        text = "https://github.com/" + text[len("git@github.com:"):]
+    elif text.startswith("git://github.com/"):
+        text = "https://github.com/" + text[len("git://github.com/"):]
+    if not re.match(r"^https?://", text):
+        text = "https://" + text.lstrip("/")
+
+    parsed = urlparse(text)
+    host = (parsed.hostname or "").lower()
+    if host in ("raw.githubusercontent.com", "raw.github.com", "gist.github.com"):
+        return None
+    if host not in ("github.com", "www.github.com"):
+        return None  # docs.github.com 等子域不是仓库
+
+    segments = [s for s in parsed.path.split("/") if s]
+    if len(segments) < 2:
+        return None  # /owner 单段是用户页，不是仓库
+    owner, repo = segments[0], segments[1]
+    if owner.lower() in _GITHUB_RESERVED_TOP_SEGMENTS:
+        return None  # /sponsors/xxx、/topics/xxx
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    if not owner or not repo:
+        return None
+
+    rest = segments[2:]
+    if rest and rest[0].lower() == "tree":
+        if len(rest) > 1:
+            # 保留子目录路径（monorepo 子包），供 GitHub 流程定位 sub_path
+            return f"https://github.com/{owner}/{repo}/tree/" + "/".join(rest[1:])
+        return f"https://github.com/{owner}/{repo}"
+    if rest and rest[0].lower() in _GITHUB_NON_REPO_SUFFIXES:
+        return f"https://github.com/{owner}/{repo}"
+    return f"https://github.com/{owner}/{repo}"
+
+
+def _extract_github_repo_url(info: Dict[str, Any]) -> Optional[str]:
+    """从 PyPI 元数据中提取可用的 GitHub 仓库 URL。
+
+    候选来源按可靠性排序：project_urls 优先 key > project_urls 其他 key >
+    home_page > download_url > description 正文里的链接。
+    """
+    candidates: List[tuple] = []
+
+    project_urls = info.get("project_urls") or {}
+    if isinstance(project_urls, dict):
+        for key, value in project_urls.items():
+            if not isinstance(value, str):
+                continue
+            lower_key = str(key).strip().lower()
+            if any(hint in lower_key for hint in _DEPRECATED_URL_KEY_HINTS):
+                candidates.append((4, value))  # 降权：仅在别处找不到仓库时使用
+            elif any(lower_key == p or p in lower_key for p in _REPO_URL_KEY_PRIORITY):
+                candidates.append((0, value))
+            else:
+                candidates.append((1, value))
+
+    for field, rank in (("home_page", 2), ("homepage", 2), ("download_url", 3)):
+        value = info.get(field)
+        if isinstance(value, str) and value:
+            candidates.append((rank, value))
+
+    description = info.get("description") or ""
+    if isinstance(description, str) and description:
+        for match in _GITHUB_URL_IN_TEXT_RE.finditer(description):
+            candidates.append((5, match.group(0)))
+
+    candidates.sort(key=lambda item: item[0])
+    for _, raw in candidates:
+        normalized = _normalize_github_repo_url(raw)
+        if normalized:
+            return normalized
+    return None
+
+
+def _pypi_project_page(package_name: str, version: Optional[str]) -> str:
+    """PyPI 项目页链接（Description 标签页）。
+
+    此前用的是 ``#files`` 锚点，落到只罗列构件的 Files 标签页；带许可证分类器
+    与 README 正文的是 Description 页，即去掉锚点的裸项目页 URL。
+    """
+    version_part = f"/{version}" if version else ""
+    return f"https://pypi.org/project/{package_name}{version_part}/"
+
 
 class PyPIAPIError(Exception):
     """PyPI API 调用异常"""
@@ -242,41 +391,49 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
         readme_content = info.get("description", "")
         
         # 6. 源码仓库 URL 处理
-        repo_url = None
-        if info.get("project_urls"):
-            for key, value in info["project_urls"].items():
-                if "github.com" in value.lower():
-                    repo_url = value
-                    break
-        if not repo_url and "github.com" in (info.get("home_page") or ""):
-            repo_url = info["home_page"]
-            
+        # 按 key 优先级挑选并规范化：Funding/Issues/Wiki 等非仓库页会被过滤掉，
+        # 只有真正形如 github.com/owner/repo 的地址才会进入 GitHub 分析流程。
+        repo_url = _extract_github_repo_url(info)
+        if repo_url:
+            logger.info(f"Resolved GitHub repository from PyPI metadata: {repo_url}")
+        else:
+            logger.debug(f"No usable GitHub repository URL in PyPI metadata for {package_name}")
+
         # 7. 调用 GitHub API 获取完整信息（如果有 GitHub 仓库）
         github_result = None
         use_github_result = False
-        
+
         # 在调用 GitHub API 时也添加重试逻辑
-        if repo_url and "github.com" in repo_url:
+        if repo_url:
             logger.info(f"Found GitHub repository: {repo_url}, using GitHub analysis as primary source")
+            from core.github_utils import process_github_repository, GitHubAPI
             for attempt in range(3):  # GitHub API 重试3次
                 try:
-                    from core.github_utils import process_github_repository, GitHubAPI
                     api = GitHubAPI()
                     github_result = await process_github_repository(
                         api,
                         repo_url,
-                        resolved_version
+                        resolved_version,
+                        name=package_name,  # 供 monorepo 子包按组件名定位子目录
                     )
                     if github_result and github_result.get("status") == "success":
                         use_github_result = True
                         logger.info("Successfully obtained GitHub analysis results, will use as primary source")
-                    break  # 成功则退出重试
+                    else:
+                        status = github_result.get("status") if github_result else None
+                        logger.warning(
+                            f"GitHub analysis attempt {attempt + 1} returned status={status}, "
+                            f"falling back to PyPI metadata"
+                        )
+                    # 拿到结果即退出：非 success 多为确定性失败（仓库 404 等），
+                    # 重试只会浪费 GitHub 配额；只有异常才需要重试。
+                    break
                 except Exception as e:
                     logger.warning(f"GitHub API attempt {attempt + 1} failed: {str(e)}")
                     if attempt == 2:  # 最后一次尝试失败
                         logger.error(f"Failed to process GitHub repository after 3 attempts: {str(e)}")
                     else:
-                        time.sleep(attempt * 2)  # 重试等待
+                        await asyncio.sleep(2 ** attempt)  # 异步等待，避免阻塞事件循环
                         
         # 8. 处理版权信息和许可证信息
         if use_github_result and github_result:
@@ -285,12 +442,13 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             
             # 基础信息保持PyPI的
             final_license_type = github_result.get("license_type", license_type)
-            final_license_files = github_result.get("license_files", f"https://pypi.org/project/{package_name}/{resolved_version}/#files")
+            fallback_page = _pypi_project_page(package_name, resolved_version)
+            final_license_files = github_result.get("license_files") or fallback_page
 
             # GitHub 仓库无对应版本 tag（回退到默认分支 blob 链接）时，改用 PyPI
             # 带版本号的页面链接，保证链接与版本对应；其余字段仍以 GitHub 分析为准。
             if github_result.get("used_default_branch"):
-                versioned_url = f"https://pypi.org/project/{package_name}/{resolved_version}/#files"
+                versioned_url = fallback_page
                 from core.utils import is_url_reachable
                 if await is_url_reachable(versioned_url):
                     logger.info(
@@ -319,7 +477,7 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             logger.info("Using PyPI analysis results as primary source")
             
             final_license_type = license_type
-            final_license_files = f"https://pypi.org/project/{package_name}/{resolved_version}/#files"
+            final_license_files = _pypi_project_page(package_name, resolved_version)
             final_license_analysis = None
             final_has_license_conflict = None
             final_readme_license = None
