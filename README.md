@@ -210,6 +210,11 @@ nuget://PackageName
 # Go模块
 https://pkg.go.dev/module-path
 go://module-path
+
+# Maven（mvnrepository、Maven Central 官方前端、repo1 源站、Nexus/Artifactory）
+https://mvnrepository.com/artifact/groupId/artifactId[/version]
+https://central.sonatype.com/artifact/groupId/artifactId[/version]
+https://repo1.maven.org/maven2/group/path/artifactId/version/
 ```
 
 ## 分析流程

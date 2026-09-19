@@ -633,3 +633,129 @@ class TestMainDispatchGating:
             _github_result_fixture(True, blob),
         )
         assert result["license_files"] == blob
+
+
+class TestCentralSonatypeSupport:
+    """central.sonatype.com（Maven Central 官方前端）与 mvnrepository.com
+    共用 /artifact/<group>/<artifact>[/<version>] 语法，应走同一条 Maven 流水线，
+    实际 POM 请求落到 repo1.maven.org 源站。"""
+
+    POM_WITH_APACHE_LICENSE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.alibaba.fastjson2</groupId>
+  <artifactId>fastjson2-extension</artifactId>
+  <version>2.0.40</version>
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+    </license>
+  </licenses>
+</project>
+"""
+
+    def test_parse_versioned_sonatype_url(self):
+        location = parse_maven_repository_location(
+            "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
+        )
+        assert location.gav.group_id == "com.alibaba.fastjson2"
+        assert location.gav.artifact_id == "fastjson2-extension"
+        assert location.gav.version == "2.0.40"
+        assert location.repository_base_url == "https://repo1.maven.org/maven2"
+        assert location.pom_url == (
+            "https://repo1.maven.org/maven2/com/alibaba/fastjson2/"
+            "fastjson2-extension/2.0.40/fastjson2-extension-2.0.40.pom"
+        )
+
+    def test_parse_sonatype_url_without_version(self):
+        location = parse_maven_repository_location(
+            "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension"
+        )
+        assert location.gav.version is None
+        assert location.pom_url == ""
+
+    def test_parse_sonatype_url_ignores_query_and_fragment(self):
+        location = parse_maven_repository_location(
+            "https://central.sonatype.com/artifact/org.slf4j/slf4j-api/1.7.36?tab=licenses#files"
+        )
+        assert location.gav.version == "1.7.36"
+
+    def test_input_version_column_overrides_url_version(self):
+        location = parse_maven_repository_location(
+            "https://central.sonatype.com/artifact/org.slf4j/slf4j-api/1.7.36",
+            version="2.0.0",
+        )
+        assert location.gav.version == "2.0.0"
+
+    def test_is_maven_repository_url_accepts_sonatype(self):
+        assert is_maven_repository_url(
+            "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
+        )
+        assert is_maven_repository_url(
+            "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension"
+        )
+
+    @pytest.mark.asyncio
+    async def test_versioned_license_url_roundtrips_to_sonatype(self):
+        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)) as mock_check:
+            url = await build_versioned_maven_license_url(
+                "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
+            )
+        assert url == (
+            "https://central.sonatype.com/artifact/"
+            "com.alibaba.fastjson2/fastjson2-extension/2.0.40"
+        )
+        # 版本存在性校验走 repo1.maven.org 源站，而不是 sonatype 页面
+        mock_check.assert_awaited_once_with(
+            "https://repo1.maven.org/maven2/com/alibaba/fastjson2/"
+            "fastjson2-extension/2.0.40/"
+        )
+
+    def test_analysis_fetches_pom_from_central_origin(self):
+        pom_url = (
+            "https://repo1.maven.org/maven2/com/alibaba/fastjson2/"
+            "fastjson2-extension/2.0.40/fastjson2-extension-2.0.40.pom"
+        )
+        with patch(
+            "core.maven_utils._http_get",
+            return_value=(self.POM_WITH_APACHE_LICENSE, 200),
+        ) as mock_get, patch(
+            "core.maven_utils._convert_licenses_to_spdx",
+            return_value="Apache-2.0",
+        ):
+            analysis = analyze_maven_repository_url(
+                "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
+            )
+
+        mock_get.assert_called_once_with(pom_url)
+        assert analysis["group_id"] == "com.alibaba.fastjson2"
+        assert analysis["artifact_id"] == "fastjson2-extension"
+        assert analysis["version"] == "2.0.40"
+        assert analysis["license"] == "Apache-2.0"
+        assert analysis["license_source"] == "maven_central"
+        assert analysis["pom_url"] == pom_url
+
+    def test_build_result_from_sonatype_analysis(self):
+        with patch(
+            "core.maven_utils._http_get",
+            return_value=(self.POM_WITH_APACHE_LICENSE, 200),
+        ), patch(
+            "core.maven_utils._convert_licenses_to_spdx",
+            return_value="Apache-2.0",
+        ):
+            analysis = analyze_maven_repository_url(
+                "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
+            )
+        result = build_maven_repository_result(
+            analysis,
+            "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40",
+            "2.0.40",
+            "fastjson2-extension",
+        )
+        assert result is not None
+        assert result["status"] == "success"
+        assert result["license_type"] == "Apache-2.0"
+        assert result["resolved_version"] == "2.0.40"
+        assert result["component_name"] == "fastjson2-extension"

@@ -127,6 +127,17 @@ def _join_repository_url(base_url: str, relative_path: str) -> str:
     return f"{base_url.rstrip('/')}/{relative_path.lstrip('/')}"
 
 
+def is_maven_artifact_page_host(netloc: str) -> bool:
+    """Return whether *netloc* hosts a Maven artifact page site.
+
+    mvnrepository.com 与 central.sonatype.com（Maven Central 官方前端）
+    共用 ``/artifact/<group>/<artifact>[/<version>]`` 路径语法；两者都是
+    展示页而非仓库源站，解析后实际 POM 请求一律走 Maven Central 源站。
+    """
+    host = (netloc or "").lower()
+    return "mvnrepository.com" in host or "central.sonatype.com" in host
+
+
 def parse_maven_repository_location(
     url: str,
     version: Optional[str] = None,
@@ -138,6 +149,9 @@ def parse_maven_repository_location(
     from Maven Central's ``/maven2/`` marker, common Nexus/Artifactory
     ``/repository/<repo>/`` layouts, Tencent's
     ``/repository/maven/<repo>/`` layout, or an explicitly configured root.
+    Artifact page sites (mvnrepository.com, central.sonatype.com) are parsed
+    from their ``/artifact/<group>/<artifact>[/<version>]`` pages and resolved
+    against Maven Central's origin (repo1.maven.org).
     """
 
     if not isinstance(url, str) or not url.strip():
@@ -148,7 +162,9 @@ def parse_maven_repository_location(
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise MavenURLParseError(f"Unsupported Maven URL: {url}")
 
-    if "mvnrepository.com" in parsed.netloc.lower():
+    if is_maven_artifact_page_host(parsed.netloc):
+        # mvnrepository.com / central.sonatype.com：展示页，不是仓库源站。
+        # 解析出 GAV 后 POM 请求一律走 Maven Central 源站（repo1.maven.org）。
         gav = parse_mvnrepository_url(url)
         resolved_version = version or gav.version
         gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
@@ -323,7 +339,8 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
     Parameters
     ----------
     url: str
-        输入的 Maven URL（Maven Central、mvnrepository、Nexus/Artifactory 或已配置私服）。
+        输入的 Maven URL（Maven Central、mvnrepository、central.sonatype.com、
+        Nexus/Artifactory 或已配置私服）。
     version: str, optional
         期望的版本号；缺省时使用 URL 中携带的版本号。
 
@@ -346,8 +363,9 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
         return None
 
     parsed_host = urlparse(url).netloc.lower()
-    is_mvnrepository = "mvnrepository.com" in parsed_host
-    if is_mvnrepository:
+    is_page_site = is_maven_artifact_page_host(parsed_host)
+    is_sonatype = "central.sonatype.com" in parsed_host
+    if is_page_site:
         check_base = _DEFAULT_MAVEN_CENTRAL_BASE
     else:
         check_base = location.repository_base_url
@@ -361,7 +379,10 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
         logger.info(f"Maven repository has no version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
         return None
 
-    if is_mvnrepository or parsed_host in {"repo1.maven.org", "repo.maven.apache.org"}:
+    if is_sonatype:
+        # 输出与输入同站点的链接，保持生态一致
+        return f"https://central.sonatype.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
+    if is_page_site or parsed_host in {"repo1.maven.org", "repo.maven.apache.org"}:
         return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
     return _join_repository_url(
         location.repository_base_url,
@@ -437,13 +458,16 @@ def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
 
 
 def parse_mvnrepository_url(url: str) -> GAV:
-    """Parse a mvnrepository.com URL and return its GAV components.
+    """Parse a mvnrepository.com / central.sonatype.com URL and return its GAV components.
 
     The expected URL forms are::
 
         https://mvnrepository.com/artifact/<group>/<artifact>
         https://mvnrepository.com/artifact/<group>/<artifact>/<version>
+        https://central.sonatype.com/artifact/<group>/<artifact>
+        https://central.sonatype.com/artifact/<group>/<artifact>/<version>
 
+    两个站点的 ``/artifact/<group>/<artifact>[/<version>]`` 路径语法完全一致。
     The groupId may contain dots, the artifactId is assumed to be the
     second path segment and the optional version is the third.  Any
     query parameters or fragments will be ignored.
@@ -451,7 +475,7 @@ def parse_mvnrepository_url(url: str) -> GAV:
     Parameters
     ----------
     url: str
-        A URL pointing at a mvnrepository.com artefact page.
+        A URL pointing at a mvnrepository.com or central.sonatype.com artefact page.
 
     Returns
     -------
@@ -461,13 +485,13 @@ def parse_mvnrepository_url(url: str) -> GAV:
     Raises
     ------
     MavenURLParseError
-        If the URL does not point at mvnrepository.com or does not follow
+        If the URL does not point at a supported host or does not follow
         the expected path structure.
     """
     logger = logging.getLogger("maven_utils.parse")
-    logger.debug(f"Parsing mvnrepository URL: {url}")
+    logger.debug(f"Parsing mvnrepository/sonatype URL: {url}")
     parsed = urlparse(url)
-    if not parsed.netloc or "mvnrepository.com" not in parsed.netloc:
+    if not parsed.netloc or not is_maven_artifact_page_host(parsed.netloc):
         raise MavenURLParseError(f"Unsupported host in URL: {url}")
 
     # Normalise path: remove leading/trailing slashes and decode percent encoding.
@@ -1011,7 +1035,8 @@ def analyze_maven_repository_url(
     Parameters
     ----------
     url: str
-        A Maven Central, mvnrepository.com, Nexus/Artifactory, Tencent mirror,
+        A Maven Central, mvnrepository.com, central.sonatype.com,
+        Nexus/Artifactory, Tencent mirror,
         or configured private-repository artifact URL.
 
     Returns
