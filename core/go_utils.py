@@ -88,6 +88,17 @@ def pkggo_to_proxy_url(pkggo_url: str) -> str:
     return result
 
 
+def strip_go_major_version_suffix(module_path: str) -> str:
+    """剥掉 Go 模块路径尾部的语义版本后缀（如 /v2、/v3）。
+
+    Go 语义化导入版本规则：主版本 >=2 时模块路径以 /vN 结尾，
+    该后缀不属于 GitHub 仓库路径（github.com/alicebob/miniredis/v2
+    对应的仓库是 github.com/alicebob/miniredis）。
+    """
+    import re
+    return re.sub(r"/v(?:[2-9]|[1-9]\d+)$", "", module_path)
+
+
 async def get_github_url_from_pkggo(pkggo_url: str, version: Optional[str] = None, name: Optional[str] = None) -> dict:
     """
     根据 pkg.go.dev/go module 地址，获取 proxy.golang.org 的元数据，并尝试提取 GitHub 仓库地址
@@ -111,7 +122,8 @@ async def get_github_url_from_pkggo(pkggo_url: str, version: Optional[str] = Non
             # 兼容 module_path 以 github.com/ 开头的情况
             module_path = url.replace("https://", "").replace("http://", "") if github_url else info.get("Path") or info.get("path") or ""
             if not github_url and module_path.startswith("github.com/"):
-                github_url = f"https://{module_path}"
+                # 模块路径可能带语义版本后缀（/vN），仓库地址需剥掉
+                github_url = f"https://{strip_go_major_version_suffix(module_path)}"
             return {
                 "github_url": github_url,
                 "module_path": module_path,

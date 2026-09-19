@@ -13,6 +13,7 @@ import re
 import json
 import httpx  # 新增：导入 httpx
 import asyncio  # 新增：导入 asyncio
+import random  # 限流等待抖动，避免并发任务在重置时刻齐发
 from httpx import AsyncClient
 import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
@@ -40,6 +41,33 @@ with open("prompts.yaml", "r", encoding="utf-8") as f:
 
 logger = logging.getLogger('main')
 llm_logger = logging.getLogger('llm_interaction')
+
+
+def _rate_limit_wait_seconds(response: httpx.Response) -> Optional[float]:
+    """判断响应是否为限流（主限流/次限流），是则返回应等待的秒数，否则返回 None。
+
+    优先级：Retry-After 头 > X-RateLimit-Remaining=0 时的 X-RateLimit-Reset
+    > 响应文本含 "rate limit"（次限流场景通常无可靠重置时间，退避 60s）。
+    """
+    if response.status_code not in (403, 429):
+        return None
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(float(retry_after), 1.0)
+        except ValueError:
+            pass
+    if response.headers.get("X-RateLimit-Remaining") == "0":
+        try:
+            reset_time = int(response.headers.get("X-RateLimit-Reset", "0"))
+        except ValueError:
+            reset_time = 0
+        if reset_time > 0:
+            return max(reset_time - time.time(), 0) + 2
+    if "rate limit" in response.text.lower():
+        # 次限流（secondary rate limit）：GitHub 官方建议至少等待 60s
+        return 60.0
+    return None
 
 
 def _is_retryable_request_error(exc: BaseException) -> bool:
@@ -77,6 +105,44 @@ def _extract_status_code(exc: BaseException):
                 pass
         cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
     return None
+
+
+def _candidate_repo_names(name: Any, exclude: str = "") -> List[str]:
+    """从 name 列提取可能的 GitHub 仓库名候选，用于 get_repo_info 404 后的兜底重试。
+
+    name 列不一定是裸仓库名——Go 模块路径（github.com/owner/repo/v2）、
+    Maven group:artifact（org.apache.hive:hive-storage-api）、带协议的 URL
+    都常见，直接拼 /repos/{owner}/{name} 必然 404。这里按优先级生成候选：
+    路径/URL 末段（先剥 Go 语义版本后缀 /vN）→ 冒号后的 artifact 段 → 原值。
+    纯版本号段（v2、v3…）与形态非法的值直接丢弃。
+    """
+    if is_blank_value(name):
+        return []
+    text = str(name).strip()
+    candidates: List[str] = []
+
+    def _add(value: str) -> None:
+        value = (value or "").strip().strip("/")
+        if not value or value == exclude or value in candidates:
+            return
+        if re.fullmatch(r"v\d+", value):  # 版本号段不是仓库名
+            return
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value):
+            candidates.append(value)
+
+    # 路径 / URL 形式：先剥协议与 Go 语义版本后缀，再取末段
+    stripped = re.sub(r"^https?://", "", text)
+    stripped = re.sub(r"/v(?:[2-9]|[1-9]\d+)$", "", stripped)
+    if "/" in stripped:
+        parts = [p for p in stripped.split("/") if p]
+        if parts:
+            _add(parts[-1])
+    # 冒号形式（Maven group:artifact）：取 artifact 段
+    if ":" in text:
+        _add(text.split(":")[-1])
+    # 原值兜底（裸仓库名场景）
+    _add(text)
+    return candidates
 
 
 def normalize_github_url(url: str) -> str:
@@ -231,13 +297,12 @@ class GitHubAPI:
         # Implement rate limit handling with retry logic
         while True:
             response = self.session.get(url, params=params)
-            # Check for rate limit exceeded
-            if response.status_code == 403 and "rate limit" in response.text.lower():
-                # Calculate wait time based on rate limit reset time
-                reset_time = int(response.headers.get("X-RateLimit-Reset", 0))
-                wait_time = max(reset_time - time.time(), 0) + 1
-                logger.warning(f"Rate limited. Waiting {wait_time:.0f} seconds...")
-                time.sleep(wait_time)
+            # 限流（含 429 / Retry-After / 次限流）：等待配额恢复后重发
+            wait_seconds = _rate_limit_wait_seconds(response)
+            if wait_seconds is not None:
+                wait_total = wait_seconds + random.uniform(0, 5)
+                logger.warning(f"Rate limited. Waiting {wait_total:.0f} seconds...")
+                time.sleep(wait_total)
                 continue
             response.raise_for_status()
             logger.debug(f"Request successful. Status code: {response.status_code}")
@@ -252,9 +317,11 @@ class GitHubAPI:
         """
         异步请求处理，包含速率限制处理和自动重定向。
 
-        注意：明确的 4xx 客户端错误（如 404 未找到许可证）不再重试——这类错误是确定性的，
-        重试只会浪费数秒退避时间（字体仓库大量没有 GitHub 自动识别的许可证），且会把原始
-        HTTPStatusError 包成 RetryError、干扰调用方的 404 判定。仅对限流(403/429)、超时(408)、
+        限流（403/429 且确认为 rate limit）时不抛错、不消耗 tenacity 重试次数，
+        而是按 X-RateLimit-Reset / Retry-After 原地等待配额恢复后继续（与同步版
+        _make_request_sync 行为一致）。明确的 4xx 客户端错误（如 404）不重试——
+        这类错误是确定性的，重试只会浪费退避时间，且会把原始 HTTPStatusError
+        包成 RetryError、干扰调用方的 404 判定。仅对非限流的 403/429、超时(408)、
         5xx 与网络错误重试。
         """
         url = f"{self.BASE_URL}{endpoint}"
@@ -262,12 +329,24 @@ class GitHubAPI:
         if params:
             logger.debug(f"Request parameters: {params}")
 
-        async with AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(
-                url,
-                params=params,
-                headers=self.headers
-            )
+        while True:
+            async with AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+            # 限流：等待配额恢复后再发，不消耗外层重试次数
+            wait_seconds = _rate_limit_wait_seconds(response)
+            if wait_seconds is not None:
+                # 加随机抖动，避免并发任务在重置时刻齐发再次触发限流
+                wait_total = wait_seconds + random.uniform(0, 5)
+                logger.warning(
+                    f"GitHub API rate limited on {endpoint} "
+                    f"(status {response.status_code}). Waiting {wait_total:.0f}s for quota reset..."
+                )
+                await asyncio.sleep(wait_total)
+                continue
             # 如果不是 2xx，记录并抛出异常
             if response.status_code in (301, 302, 307, 308):
                 logger.warning(f"Redirected ({response.status_code}) to: {response.headers.get('location')}")
@@ -1405,33 +1484,37 @@ async def process_github_repository(
         try:
             repo_info = await api.get_repo_info(owner, repo)
         except Exception as e:
-            substep_logger.warning(f"Error getting repo_info for {owner}/{repo}: {e}, will try with repo=name if name is provided.")
-            if name:
-                try:
-                    repo_info = await api.get_repo_info(owner, name)
-                    repo = name
-                    substep_logger.info(f"Successfully got repo_info with repo=name: {name}")
-                except Exception as e2:
-                    substep_logger.error(f"Failed to get repo_info with repo=name: {name}: {e2}")
-                    return {
-                        "input_url": input_url,
-                        "repo_url": repo_url,
-                        "input_version": version,
-                        "resolved_version": None,
-                        "used_default_branch": False,
-                        "component_name": None,
-                        "license_files": "",
-                        "license_analysis": None,
-                        "license_type": None,
-                        "has_license_conflict": False,
-                        "readme_license": None,
-                        "license_file_license": None,
-                        "copyright_notice": None,
-                        "status": "error",
-                        "license_determination_reason": f"Failed to get repo_info for both {repo} and {name}"
-                    }
-            else:
+            # 仅 404 时换名重试才有意义；限流/网络等错误换 name 重试同样会失败，
+            # 只会浪费配额并制造误导性的二次 404（如 name 是模块路径时）
+            status_code = _extract_status_code(e)
+            candidates = _candidate_repo_names(name, exclude=repo) if status_code == 404 else []
+            if status_code != 404:
+                substep_logger.error(
+                    f"Error getting repo_info for {owner}/{repo} (status={status_code}), "
+                    f"not a 404, skipping repo=name fallback: {e}"
+                )
+            elif not candidates:
                 substep_logger.error(f"No alternative repo name provided, cannot retry get_repo_info.")
+            repo_info = None
+            last_error = e
+            for candidate in candidates:
+                substep_logger.warning(
+                    f"Error getting repo_info for {owner}/{repo}: 404, will try with repo={candidate} (from name={name})."
+                )
+                try:
+                    repo_info = await api.get_repo_info(owner, candidate)
+                    repo = candidate
+                    substep_logger.info(f"Successfully got repo_info with repo={candidate}")
+                    break
+                except Exception as e2:
+                    last_error = e2
+            if repo_info is None:
+                if candidates:
+                    substep_logger.error(f"Failed to get repo_info with repo=name: {name}: {last_error}")
+                reason = (
+                    f"Failed to get repo_info for both {repo} and {name}"
+                    if candidates else f"Failed to get repo_info for {repo}"
+                )
                 return {
                     "input_url": input_url,
                     "repo_url": repo_url,
@@ -1447,7 +1530,7 @@ async def process_github_repository(
                     "license_file_license": None,
                     "copyright_notice": None,
                     "status": "error",
-                    "license_determination_reason": f"Failed to get repo_info for {repo}"
+                    "license_determination_reason": reason
                 }
         component_name = repo_info.get("name", repo)
         substep_logger.info(f"Retrieved component name: {component_name}")

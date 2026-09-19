@@ -1161,8 +1161,17 @@ class ParsedPurl(NamedTuple):
         npm 的 scope 是包名的一部分（``@scope/name``），必须整体带上；
         其余生态的 namespace 是 groupId / 模块路径等定位信息，不属于组件名，
         沿用各自 handler 期望的短名（如 maven 的 artifactId）。
+        Go 模块主版本 >=2 时 purl 的 name 段会是版本后缀（如 ``v2``，
+        见 ``pkg:golang/github.com/alicebob/miniredis/v2``），并非组件名，
+        此时回退到 namespace 末段（``miniredis``）。
         """
-        return self.full_name if self.type == "npm" else self.name
+        if self.type == "npm":
+            return self.full_name
+        if self.type == "golang" and re.fullmatch(r"v\d+", self.name) and self.namespace:
+            tail = self.namespace.rstrip("/").split("/")[-1]
+            if tail:
+                return tail
+        return self.name
 
 
 def is_purl(value: Any) -> bool:
