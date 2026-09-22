@@ -1,4 +1,6 @@
 # GitHub Repository License Analyzer
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FAttorneyTao%2FLicenseDetector.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FAttorneyTao%2FLicenseDetector?ref=badge_shield)
+
 
 一个强大的开源许可证分析工具，专为GitHub仓库设计，支持复杂场景下的许可证识别和合规审查。
 
@@ -395,3 +397,7 @@ A: 系统支持并发处理和进度追踪，大型仓库会需要更长时间�
 ---
 
 *此工具专为开源许可证合规审查设计，适用于法务人员、合规工程师和软件供应链安全分析人员。*
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FAttorneyTao%2FLicenseDetector.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FAttorneyTao%2FLicenseDetector?ref=badge_large)
