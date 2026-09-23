@@ -921,7 +921,7 @@ def _convert_licenses_to_spdx(licenses_list: List[Dict]) -> Optional[str]:
     
     try:
         # 导入必要的模块
-        from core.llm_provider import get_llm_provider
+        from core.llm_service import complete_sync
         from core.config import LLM_CONFIG
         import yaml
         import os
@@ -940,9 +940,8 @@ def _convert_licenses_to_spdx(licenses_list: List[Dict]) -> Optional[str]:
         logger.info(f"Prompt: {prompt}")
         
         # 调用大模型
-        provider = get_llm_provider()
         try:
-            response = provider.generate(prompt)
+            response = complete_sync("license_standardize", prompt)
         except RuntimeError as e:
             if "This event loop is already running" in str(e):
                 logger.warning("Event loop is already running, skipping LLM-based license standardization")

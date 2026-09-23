@@ -4,7 +4,7 @@ import logging
 import platform
 from openai import AsyncOpenAI
 from core.config import LLM_CONFIG
-from core.llm_provider import get_llm_provider
+from core.llm_service import complete_async
 from core.utils import find_matching_version
 import yaml
 from bs4 import BeautifulSoup
@@ -78,12 +78,11 @@ async def get_license_type_by_llm(license_url: str, name: str = "", version: str
     logger.info(f"LLM 处理 license_url: {license_url}, 最终 URL: {final_url}, prompt 长度: {len(prompt)}")
     logger.info(f"LLM prompts:{prompt}")
 
-    provider = get_llm_provider()
     if platform.system() == "Windows":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
-        response = await provider.generate_async(prompt)
+        response = await complete_async("nuget_license_type", prompt)
         logger.info(f"LLM Response:{response}")
         
         # 解析 JSON 返回

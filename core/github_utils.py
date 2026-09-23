@@ -21,7 +21,7 @@ from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pypi_utils import process_pypi_repository
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed, prepare_license_text, is_purl, parse_purl, purl_to_url, is_blank_value
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
-from core.llm_provider import get_llm_provider
+from core.llm_service import complete_sync, complete_async
 import platform
 from openai import AsyncOpenAI
 
@@ -734,8 +734,7 @@ def find_github_url_from_package_url_sync(package_url: str) -> Optional[str]:
         llm_logger.info("GitHub URL Lookup Request:")
         llm_logger.info(f"Prompt: {prompt}")
         
-        provider = get_llm_provider()
-        response = provider.generate(prompt)
+        response = complete_sync("github_url_finder", prompt)
         
         llm_logger.info("GitHub URL Lookup Response:")
         llm_logger.info(f"Response: {response}")
@@ -806,8 +805,11 @@ async def select_primary_license_file(license_files_detailed: List[Dict[str, str
     llm_logger.info(f"Prompt: {prompt}")
     
     try:
-        provider = get_llm_provider()
-        response = provider.generate(prompt)
+        task = "font_license_selector" if font_mode else "license_selector"
+        response = complete_sync(
+            task, prompt,
+            context={"candidates": [item["path"] for item in license_files_detailed]},
+        )
         
         llm_logger.info("License Priority Selection Response:")
         llm_logger.info(f"Response: {response}")
@@ -901,8 +903,10 @@ async def locate_component_license_dir(
     llm_logger.info(f"Prompt: {prompt}")
 
     try:
-        provider = get_llm_provider()
-        response = provider.generate(prompt)
+        response = complete_sync(
+            "component_license_locator", prompt,
+            context={"candidates": [item["directory"] for item in candidate_dirs]},
+        )
 
         llm_logger.info("Component License Locator Response:")
         llm_logger.info(f"Response: {response}")
@@ -1108,8 +1112,10 @@ async def resolve_github_version(api: GitHubAPI, owner: str, repo: str, version:
             llm_logger.info(f"Prompt: {prompt}")
             version_resolve_logger.info("Version Resolve LLM Request:")
 
-            provider = get_llm_provider()
-            response = provider.generate(prompt)
+            response = complete_sync(
+                "github_version", prompt,
+                context={"candidates": candidate_versions, "default": default_branch},
+            )
             llm_logger.info("Version Resolve Response:")
             llm_logger.info(f"Response: {response}")
             version_resolve_logger.info("Version Resolve LLM Response:")
@@ -2050,13 +2056,11 @@ async def find_github_url_from_package_url(package_url: str, name: Optional[str]
     llm_logger.info("GitHub URL Lookup Request:")
     llm_logger.info(f"Prompt: {prompt}")
 
-    provider = get_llm_provider()
-
     if platform.system() == "Windows":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
-        response = await provider.generate_async(prompt)
+        response = await complete_async("github_url_finder", prompt)
         llm_logger.info("GitHub URL Lookup Response:")
         llm_logger.info(f"Response: {response}")
 

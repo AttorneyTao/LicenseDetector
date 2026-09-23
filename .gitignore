@@ -38,6 +38,9 @@ ENV/
 # Logs
 *.log
 logs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # Output files
 output.xlsx

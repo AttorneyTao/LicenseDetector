@@ -77,7 +77,7 @@ def _candidate_dirs():
 def _run_locate(monkeypatch, response, name):
     provider = _FakeProvider(response)
     monkeypatch.setattr(gh, "USE_LLM", True)
-    monkeypatch.setattr(gh, "get_llm_provider", lambda: provider)
+    monkeypatch.setattr(gh, "complete_sync", lambda task, prompt, **kwargs: provider.generate(prompt))
     result = asyncio.run(
         gh.locate_component_license_dir(name, "9.4.2", _candidate_dirs())
     )
@@ -139,12 +139,12 @@ def test_locate_no_candidates_skips_llm(monkeypatch):
     """No candidate subdirs → return None without calling the LLM."""
     called = {"hit": False}
 
-    def _boom():
+    def _boom(*args, **kwargs):
         called["hit"] = True
         raise AssertionError("LLM should not be called when there are no candidates")
 
     monkeypatch.setattr(gh, "USE_LLM", True)
-    monkeypatch.setattr(gh, "get_llm_provider", _boom)
+    monkeypatch.setattr(gh, "complete_sync", _boom)
     result = asyncio.run(gh.locate_component_license_dir("x", "1.0", []))
     assert result is None
     assert called["hit"] is False

@@ -14,6 +14,11 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
       - USE_LLM=${USE_LLM:-true}
+      - LLM_CACHE_MODE=${LLM_CACHE_MODE:-read_write}
+      - LLM_CACHE_PATH=/var/lib/licensedetector/llm-cache.sqlite
+      - LLM_CACHE_AUDIT_RATE=${LLM_CACHE_AUDIT_RATE:-0.01}
+      - LLM_CACHE_EPOCH=${LLM_CACHE_EPOCH:-1}
+      - LLM_CACHE_MODEL_REVISION=${LLM_CACHE_MODEL_REVISION:-}
       - SMTP_SERVER=${SMTP_SERVER}
       - SMTP_PORT=${SMTP_PORT}
       - SENDER_EMAIL=${SENDER_EMAIL}
@@ -23,6 +28,7 @@ services:
       - analyzer-outputs:/app/outputs
       - analyzer-logs:/app/logs
       - analyzer-temp:/app/temp
+      - analyzer-llm-cache:/var/lib/licensedetector
     command: --api --host 0.0.0.0 --port 8000
     expose:
       - "8000"
@@ -56,6 +62,8 @@ volumes:
   analyzer-outputs:
     driver: local
   analyzer-logs:
+    driver: local
+  analyzer-llm-cache:
     driver: local
   analyzer-temp:
     driver: local

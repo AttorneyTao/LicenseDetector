@@ -80,6 +80,11 @@ USE_LLM=true  # 启用/禁用LLM分析
 HTTP_PROXY=http://127.0.0.1:7897  # HTTP代理配置
 HTTPS_PROXY=http://127.0.0.1:7897  # HTTPS代理配置
 DASHSCOPE_API_KEY=your_qwen_api_key  # 备用LLM配置
+LLM_CACHE_MODE=read_write  # off / read_only / read_write；默认 read_write
+# LLM_CACHE_PATH=/var/lib/licensedetector/llm-cache.sqlite  # 可选，缓存须放在代码目录外
+# LLM_CACHE_AUDIT_RATE=0.01  # 已确认缓存命中的抽样实时复核比例
+# LLM_CACHE_EPOCH=1  # 修改此值可以让全部旧缓存立即失效
+# LLM_CACHE_MODEL_REVISION=  # 模型服务端版本变化时可设置新的修订标识
 MAVEN_REPOSITORY_BASE_URLS=https://repo.example.com/repository/releases  # 可选；多个私服根地址用逗号分隔
 ```
 
@@ -330,6 +335,14 @@ https://repo1.maven.org/maven2/group/path/artifactId/version/
 - `logs/repository_trees.log`: 仓库结构信息
 
 ## 高级功能
+
+### LLM 响应缓存
+
+仅对有明确校验规则的任务缓存完全相同的提示词；任务类型、模型、调用参数和策略版本也参与缓存键。第一次有效回答只记为候选；第二次独立调用得到相同的有效结论后才供后续调用复用。低置信度、空值、无效格式或不在候选列表内的回答不缓存；两次结论冲突时隔离该键，继续实时调用。命中时再次按当前输入校验；默认 1% 命中会实时复核。缓存定期过期，过期记录在后续写入时清理。缓存故障直接回退实时调用，不影响主流程。
+
+默认缓存文件位于 Linux 的 `/var/lib/licensedetector/llm-cache.sqlite` 或 macOS 的 `~/Library/Application Support/LicenseDetector/llm-cache.sqlite`，不在 Git 工作目录。Docker Compose 使用持久化卷。可用 `LLM_CACHE_MODE=off` 立即关闭，或设为 `read_only` 暂停写入。按任务清除示例：`uv run python -m core.llm_cache invalidate --task license_analysis`；清空全部：`uv run python -m core.llm_cache invalidate --all`。调整 `LLM_CACHE_EPOCH` 可使旧键整体失效。缓存文件可能含模型输出，应限制访问和备份范围。
+
+缓存不能从根本上证明模型结论正确；两次一致、字段校验和抽样复核只能降低错误被长期复用的风险。涉及高风险结论时可关闭缓存并人工复核。
 
 ### 配置自定义
 

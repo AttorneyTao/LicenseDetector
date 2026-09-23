@@ -6,7 +6,7 @@ import time
 import logging
 import requests
 import yaml
-from .llm_provider import get_llm_provider
+from .llm_service import complete_sync
 from datetime import datetime, timezone
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -279,16 +279,13 @@ async def _standardize_license(license_info: Dict[str, Any]) -> str:
                 with open("prompts.yaml", 'r', encoding='utf-8') as f:
                     prompts = yaml.safe_load(f)
                 
-                # 初始化 LLM Provider
-                provider = get_llm_provider()
-                
                 # 准备提示词
                 prompt = prompts["license_standardize"].format(
                     license_string=raw_license
                 )
                 
                 # 调用模型
-                response = provider.generate(prompt)
+                response = complete_sync("license_standardize", prompt)
                 logger.debug(f"LLM raw response: {response}")
                 
                 # 清理并解析响应

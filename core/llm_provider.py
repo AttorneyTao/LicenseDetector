@@ -300,11 +300,11 @@ def get_llm_provider() -> LLMProvider:
 
 def generate_text(prompt: str, **kwargs) -> str:
     """Generate text using the default provider (synchronous)."""
-    provider = get_llm_provider()
-    return provider.generate(prompt, **kwargs)
+    from .llm_service import complete_sync
+    return complete_sync("legacy", prompt, **kwargs)
 
 
 async def generate_text_async(prompt: str, **kwargs) -> str:
     """Generate text using the default provider (asynchronous)."""
-    provider = get_llm_provider()
-    return await provider.generate_async(prompt, **kwargs)
+    from .llm_service import complete_async
+    return await complete_async("legacy", prompt, **kwargs)

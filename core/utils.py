@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, NamedTuple, Optional, Set
 from .config import LLM_CONFIG, THIRD_PARTY_KEYWORDS
-from .llm_provider import get_llm_provider
+from .llm_service import complete_sync, complete_async
 from dotenv import load_dotenv
 import yaml
 import os
@@ -162,11 +162,10 @@ def analyze_license_content(content: str, source_url: Optional[str] = None) -> D
         prompt = PROMPTS["license_analysis"].format(content=content)
 
         # Generate content using the LLM provider
-        provider = get_llm_provider()
         llm_logger = logging.getLogger('llm_interaction')
         llm_logger.info("License Analysis Request:")
         llm_logger.info(f"Prompt: {prompt}")
-        response = provider.generate(prompt)
+        response = complete_sync("license_analysis", prompt, context={"content": content})
         llm_logger.info(f"License Analysis Response:{response}")
 
         # Parse the response text into a dictionary
@@ -218,11 +217,10 @@ async def analyze_license_content_async(content: str, source_url: Optional[str] 
         }
     try:
         prompt = PROMPTS["license_analysis"].format(content=content)
-        provider = get_llm_provider()
         llm_logger = logging.getLogger('llm_interaction')
         llm_logger.info("License Analysis Request:")
         llm_logger.info(f"Prompt: {prompt}")
-        response = await provider.generate_async(prompt)
+        response = await complete_async("license_analysis", prompt, context={"content": content})
         llm_logger.info(f"License Analysis Response:{response}")
         if response:
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
@@ -546,9 +544,7 @@ def extract_copyright_info(content: str) -> Optional[str]:
         llm_logger.info("Copyright Extraction Request:")
         llm_logger.info(f"Prompt: {prompt}")
 
-        provider = get_llm_provider()
-        # Use synchronous generate when called from sync context
-        response = provider.generate(prompt)
+        response = complete_sync("copyright_extract", prompt, context={"content": content})
 
         llm_logger.info("Copyright Extraction Response:")
         llm_logger.info(f"Response: {response}")
@@ -583,9 +579,7 @@ async def extract_copyright_info_async(content: str) -> Optional[str]:
         llm_logger.info("Copyright Extraction Request (async):")
         llm_logger.info(f"Prompt: {prompt}")
 
-        provider = get_llm_provider()
-        # call async generation
-        response = await provider.generate_async(prompt)
+        response = await complete_async("copyright_extract", prompt, context={"content": content})
 
         llm_logger.info("Copyright Extraction Response (async):")
         llm_logger.info(f"Response: {response}")
@@ -651,8 +645,7 @@ def construct_copyright_notice(year: str, owner: str, repo: str, ref: str, compo
             llm_logger.info("Copyright Notice Construction Request:")
             llm_logger.info(f"Prompt: {prompt}")
 
-            provider = get_llm_provider()
-            response = provider.generate(prompt)
+            response = complete_sync("copyright_analysis", prompt, context={"content": combined_content})
 
             llm_logger.info("Copyright Notice Construction Response:")
             llm_logger.info(f"Response: {response}")
@@ -710,8 +703,7 @@ async def construct_copyright_notice_async(year: str, owner: str, repo: str, ref
             prompt = PROMPTS["copyright_analysis"].format(combined_content=combined_content)
             llm_logger.info("Copyright Notice Construction Request:")
             llm_logger.info(f"Prompt: {prompt}")
-            provider = get_llm_provider()
-            response = await provider.generate_async(prompt)
+            response = await complete_async("copyright_analysis", prompt, context={"content": combined_content})
             llm_logger.info("Copyright Notice Construction Response:")
             llm_logger.info(f"Response: {response}")
             if response:

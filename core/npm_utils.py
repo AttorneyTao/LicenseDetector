@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 from .config import LLM_CONFIG
-from .llm_provider import get_llm_provider
+from .llm_service import complete_sync
 from .utils import (
     analyze_license_content,
     extract_copyright_info,
@@ -344,8 +344,10 @@ def _llm_choose_npm_version(
         llm_logger.info("Prompt: %s", prompt)
         version_resolve_logger.info("NPM Version Resolve LLM Request:")
 
-        provider = get_llm_provider()
-        response = provider.generate(prompt)
+        response = complete_sync(
+            "npm_version", prompt,
+            context={"candidates": candidate_versions, "default": default_version},
+        )
 
         llm_logger.info("NPM Version Resolve Response:")
         llm_logger.info("Response: %s", response)

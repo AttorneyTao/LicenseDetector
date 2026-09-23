@@ -14,6 +14,9 @@ services:
       - ./logs:/app/logs
       # 挂载临时文件目录
       - ./temp:/app/temp
+      - analyzer-llm-cache:/var/lib/licensedetector
+    environment:
+      - LLM_CACHE_PATH=/var/lib/licensedetector/llm-cache.sqlite
     env_file: .env
     # 仅在明确运行时执行
     profiles:
@@ -33,6 +36,9 @@ services:
       - ./logs:/app/logs
       # 挂载临时文件目录
       - ./temp:/app/temp
+      - analyzer-llm-cache:/var/lib/licensedetector
+    environment:
+      - LLM_CACHE_PATH=/var/lib/licensedetector/llm-cache.sqlite
     env_file: .env
     command: --api --host 0.0.0.0 --port 8000
     # 仅在明确运行时执行
@@ -44,3 +50,4 @@ volumes:
   analyzer-outputs:
   analyzer-logs:
   analyzer-temp:
+  analyzer-llm-cache:
