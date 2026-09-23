@@ -41,7 +41,7 @@ from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COL
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_risk_level
 from core.go_utils import  get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
-from core.crate_utils import process_crate_repository
+from core.crate_utils import parse_crates_io_reference, process_crate_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 from core.deb_utils import is_deb_package_url, process_deb_package
@@ -209,11 +209,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     is_npm_pkg = is_npm_package_url(url)
                     
                     # 新增：判断是否为 crate.io Rust 包
-                    is_crate_pkg = False
-                    if isinstance(url, str):
-                        # 支持 crates.io/crates 格式
-                        if "crates.io/crates" in url:
-                            is_crate_pkg = True
+                    is_crate_pkg = parse_crates_io_reference(url) is not None
 
                     # 新增：判断是否为 pub.dev (Dart/Flutter) 包
                     is_pubdev_pkg = isinstance(url, str) and (

@@ -29,6 +29,7 @@ from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
+from core.crate_utils import parse_crates_io_reference, process_crate_repository
 from core.maven_utils import (
     analyze_maven_repository_url,
     build_maven_repository_result,
@@ -1076,6 +1077,10 @@ async def _process_repositories(api, df, log_queue=None):
                         if versioned_url:
                             logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
                             result["license_files"] = versioned_url
+
+                elif parse_crates_io_reference(url) is not None:
+                    logger.info("检测到 crates.io 包 URL: %s", url)
+                    result = await process_crate_repository(url, version)
 
                 elif is_npm_package_url(url):
                     logger.info(f"妫€娴嬪埌 npm 鍖?URL: {url}")

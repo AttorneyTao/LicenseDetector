@@ -3,7 +3,7 @@ import re
 import json
 import logging
 import requests
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
@@ -74,25 +74,36 @@ class CrateAPIError(Exception):
 # Helper utilities
 # ---------------------------------------------------------------------------
 
+def parse_crates_io_reference(url: str) -> Optional[Tuple[str, Optional[str]]]:
+    """Return (crate, version) for supported crates.io pages/API downloads."""
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"crates.io", "www.crates.io"}:
+        return None
+    parts = [unquote(part) for part in parsed.path.strip("/").split("/")]
+    if len(parts) in {2, 3} and parts[0] == "crates" and parts[1]:
+        return parts[1], parts[2] if len(parts) == 3 and parts[2] else None
+    if (
+        len(parts) == 6
+        and parts[:3] == ["api", "v1", "crates"]
+        and parts[3]
+        and parts[4]
+        and parts[5] == "download"
+    ):
+        return parts[3], parts[4]
+    return None
+
+
 def _parse_crate_name(url_or_name: str) -> str:
     """Extract crate name from full URL or raw name."""
     crate_logger.info("Parsing crate name from input: %s", url_or_name)
+    parsed = parse_crates_io_reference(url_or_name)
+    if parsed:
+        return parsed[0]
     if not url_or_name.startswith("http"):
         return url_or_name
-
-    parsed = urlparse(url_or_name)
-    path = parsed.path.strip("/")
-
-    # 处理 crates.io URL 格式
-    # https://crates.io/crates/serde
-    # https://crates.io/crates/serde/1.0.0
-    if path.startswith("crates/"):
-        parts = path.split("/")
-        if len(parts) >= 2:
-            return parts[1]  # crate name is the second part
-    
-    # 如果无法解析，返回原路径
-    return path if path else ""
+    return urlparse(url_or_name).path.strip("/")
 
 
 def _normalize_requested_crate_version(version: Optional[str]) -> Optional[str]:
@@ -421,7 +432,8 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
     crate_name = _parse_crate_name(url)
     logger.debug("Parsed crate name: %s", crate_name)
 
-    normalized_version = _normalize_requested_crate_version(version)
+    reference = parse_crates_io_reference(url)
+    normalized_version = _normalize_requested_crate_version(version or (reference[1] if reference else None))
     logger.info(
         "Normalized requested crate version: raw=%s, normalized=%s",
         version,
