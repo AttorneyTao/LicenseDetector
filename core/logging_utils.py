@@ -32,6 +32,11 @@ class WeeklyRotatingFileHandler(BaseRotatingHandler):
         self.prune_archives()
 
     def shouldRollover(self, record):
+        # Uvicorn's logging reconfiguration can close an already-attached
+        # handler. FileHandler normally reopens on emit, but rotating handlers
+        # call shouldRollover first.
+        if self.stream is None:
+            self.stream = self._open()
         if date.today() != self._active_date:
             return True
         current_size = os.fstat(self.stream.fileno()).st_size

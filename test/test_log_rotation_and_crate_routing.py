@@ -81,6 +81,18 @@ def test_rotation_by_size_and_date_and_pruning(tmp_path):
         handler.close()
 
 
+def test_closed_handler_reopens_before_rollover_check(tmp_path):
+    path = tmp_path / "service.log"
+    handler = WeeklyRotatingFileHandler(path, max_bytes=100)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.close()
+    try:
+        handler.emit(logging.LogRecord("service", logging.INFO, __file__, 1, "after reconfigure", (), None))
+        assert path.read_text() == "after reconfigure\n"
+    finally:
+        handler.close()
+
+
 def test_legacy_pruning_preserves_multiline_recent_records(tmp_path):
     log = tmp_path / "service.log"
     log.write_bytes(
