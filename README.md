@@ -331,6 +331,7 @@ https://repo1.maven.org/maven2/group/path/artifactId/version/
 - `logs/github_license_analyzer.log`: 主程序日志
 - `logs/url_construction.log`: URL处理和解析详情
 - `logs/llm_interaction.log`: LLM交互详情和响应
+- `logs/llm_cache.log`: 缓存命中、隔离及按任务统计的命中率
 - `logs/substep.log`: 分步骤执行详情
 - `logs/repository_trees.log`: 仓库结构信息
 
@@ -343,6 +344,8 @@ https://repo1.maven.org/maven2/group/path/artifactId/version/
 默认缓存文件位于 Linux 的 `/var/lib/licensedetector/llm-cache.sqlite` 或 macOS 的 `~/Library/Application Support/LicenseDetector/llm-cache.sqlite`，不在 Git 工作目录。Docker Compose 使用持久化卷。可用 `LLM_CACHE_MODE=off` 立即关闭，或设为 `read_only` 暂停写入。按任务清除示例：`uv run python -m core.llm_cache invalidate --task license_analysis`；清空全部：`uv run python -m core.llm_cache invalidate --all`。调整 `LLM_CACHE_EPOCH` 可使旧键整体失效。缓存文件可能含模型输出，应限制访问和备份范围。
 
 缓存不能从根本上证明模型结论正确；两次一致、字段校验和抽样复核只能降低错误被长期复用的风险。涉及高风险结论时可关闭缓存并人工复核。
+
+每次模型入口调用结束后，`logs/llm_cache.log` 都写入一条 `LLM_CACHE_STATS`：包含任务名、结果（`hit` / `miss` / `audit` / `bypass` / `provider_error`）、该任务与全局的累计请求数、可缓存请求数、实际命中数及命中率。`hit_rate` 的分母是可缓存请求；`global_avoidance_rate` 的分母是所有模型入口请求，表示实际避免模型调用的比例。抽样复核仍调用模型，因此不计为命中。计数按服务器本地日期和进程统计，`run` 字段用于区分服务重启；跨进程或跨日期汇总时应按日志中的逐次结果统计，不要直接累加累计值。
 
 ### 配置自定义
 

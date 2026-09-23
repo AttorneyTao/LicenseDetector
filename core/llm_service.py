@@ -7,6 +7,7 @@ import random
 from typing import Any, Mapping
 
 from . import llm_cache
+from .llm_metrics import cache_metrics
 from .llm_policies import POLICIES
 from .llm_provider import get_llm_provider
 
@@ -66,28 +67,50 @@ def _record(prepared: tuple[Any, str], task: str, response: str, context: Mappin
 
 
 def complete_sync(task: str, prompt: str, *, context: Mapping[str, Any] | None = None, **kwargs: Any) -> str:
-    provider = get_llm_provider()
+    try:
+        provider = get_llm_provider()
+    except Exception:
+        cache_metrics.record(task, "provider_error", eligible=False)
+        raise
     context = context or {}
     prepared = _prepare(task, prompt, provider, kwargs)
     cached = _read(prepared, task, context) if prepared else None
     if cached is not None and not _audit_due():
         logger.info("LLM cache hit: task=%s key=%s", task, prepared[1])
+        cache_metrics.record(task, "hit", eligible=True)
         return cached
-    response = provider.generate(prompt, **kwargs)
+    outcome = "audit" if cached is not None else ("miss" if prepared else "bypass")
+    try:
+        response = provider.generate(prompt, **kwargs)
+    except Exception:
+        cache_metrics.record(task, "provider_error", eligible=prepared is not None)
+        raise
     if prepared:
         _record(prepared, task, response, context)
+    cache_metrics.record(task, outcome, eligible=prepared is not None)
     return response
 
 
 async def complete_async(task: str, prompt: str, *, context: Mapping[str, Any] | None = None, **kwargs: Any) -> str:
-    provider = get_llm_provider()
+    try:
+        provider = get_llm_provider()
+    except Exception:
+        cache_metrics.record(task, "provider_error", eligible=False)
+        raise
     context = context or {}
     prepared = _prepare(task, prompt, provider, kwargs)
     cached = await asyncio.to_thread(_read, prepared, task, context) if prepared else None
     if cached is not None and not _audit_due():
         logger.info("LLM cache hit: task=%s key=%s", task, prepared[1])
+        cache_metrics.record(task, "hit", eligible=True)
         return cached
-    response = await provider.generate_async(prompt, **kwargs)
+    outcome = "audit" if cached is not None else ("miss" if prepared else "bypass")
+    try:
+        response = await provider.generate_async(prompt, **kwargs)
+    except Exception:
+        cache_metrics.record(task, "provider_error", eligible=prepared is not None)
+        raise
     if prepared:
         await asyncio.to_thread(_record, prepared, task, response, context)
+    cache_metrics.record(task, outcome, eligible=prepared is not None)
     return response

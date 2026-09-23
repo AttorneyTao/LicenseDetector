@@ -137,6 +137,7 @@ def setup_logging(console_level=logging.INFO):
 
     url_logger = _ensure_file_logger('url_construction', r'logs/url_construction.log')
     llm_logger = _ensure_file_logger('llm_interaction', r'logs/llm_interaction.log')
+    _ensure_file_logger('llm_cache', r'logs/llm_cache.log')
     substep_logger = _ensure_file_logger('substep', r'logs/substep.log')
     version_resolve_logger = _ensure_file_logger('version_resolve', r'logs/version_resolve.log')
     npm_logger = _ensure_file_logger('npm', r'logs/npm.log')
