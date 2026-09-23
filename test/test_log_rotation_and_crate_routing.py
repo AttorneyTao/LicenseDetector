@@ -52,6 +52,14 @@ async def test_api_crate_download_uses_crate_processor(monkeypatch):
     assert results[0]["input_url"] == url
 
 
+def test_crate_blank_spreadsheet_version_falls_back_to_download_url():
+    from core.crate_utils import _requested_crate_version
+
+    url = "https://crates.io/api/v1/crates/auto-future/1.0.0/download"
+    assert _requested_crate_version(url, float("nan")) == "1.0.0"
+    assert _requested_crate_version(url, "1.2.3") == "1.2.3"
+
+
 def test_rotation_by_size_and_date_and_pruning(tmp_path):
     path = tmp_path / "service.log"
     handler = WeeklyRotatingFileHandler(path, max_bytes=20, retention_days=7)

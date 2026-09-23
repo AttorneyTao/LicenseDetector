@@ -15,6 +15,7 @@ from .utils import (
     extract_copyright_info_async,
     analyze_license_content_async,
     find_top_level_thirdparty_dirs_local,
+    is_blank_value,
     prepare_license_text,
 )
 from bs4 import BeautifulSoup
@@ -116,7 +117,7 @@ def _normalize_requested_crate_version(version: Optional[str]) -> Optional[str]:
     - "1.0.0" -> "1.0.0"
     - "v1.0.0" -> "1.0.0"
     """
-    if version is None:
+    if is_blank_value(version):
         return None
 
     version_str = str(version).strip()
@@ -128,6 +129,12 @@ def _normalize_requested_crate_version(version: Optional[str]) -> Optional[str]:
         return version_str[1:]
 
     return version_str
+
+
+def _requested_crate_version(url: str, version: Optional[str]) -> Optional[str]:
+    reference = parse_crates_io_reference(url)
+    selected = version if not is_blank_value(version) else (reference[1] if reference else None)
+    return _normalize_requested_crate_version(selected)
 
 
 def _fetch_crate_info(crate_name: str) -> dict:
@@ -432,8 +439,7 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
     crate_name = _parse_crate_name(url)
     logger.debug("Parsed crate name: %s", crate_name)
 
-    reference = parse_crates_io_reference(url)
-    normalized_version = _normalize_requested_crate_version(version or (reference[1] if reference else None))
+    normalized_version = _requested_crate_version(url, version)
     logger.info(
         "Normalized requested crate version: raw=%s, normalized=%s",
         version,
