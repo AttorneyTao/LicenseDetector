@@ -1383,3 +1383,18 @@ def is_blank_value(value: Any) -> bool:
     if isinstance(value, str) and not value.strip():
         return True
     return False
+
+
+def fill_blank_copyright_notices(output_df: pd.DataFrame) -> pd.DataFrame:
+    """Fill empty notices only after the output table has been assembled."""
+    if "copyright_notice" not in output_df.columns:
+        output_df["copyright_notice"] = None
+    blank = output_df["copyright_notice"].isna() | output_df["copyright_notice"].map(
+        lambda value: isinstance(value, str) and not value.strip()
+    )
+    if blank.any():
+        names = output_df["input_name"] if "input_name" in output_df.columns else pd.Series("", index=output_df.index)
+        output_df.loc[blank, "copyright_notice"] = names.loc[blank].map(
+            lambda name: f"Copyright {'' if pd.isna(name) else name} Original author and authors"
+        )
+    return output_df
