@@ -8,6 +8,14 @@ import pytest
 from core import crate_archive, crate_utils
 
 
+def test_copyright_extraction_ignores_license_boilerplate():
+    content = (
+        "copyright notice that is included in or attached to the work\n"
+        "Copyright (c) 2014 The Rust Project Developers\n"
+    )
+    assert crate_archive._first_copyright_line(content) == "Copyright (c) 2014 The Rust Project Developers"
+
+
 def _crate_file(tmp_path, name, version, manifest_fields, files):
     path = tmp_path / f"{name}-{version}.crate"
     manifest = f'[package]\nname = "{name}"\nversion = "{version}"\n{manifest_fields}\n'
@@ -69,8 +77,28 @@ async def test_manifest_expression_preserved_and_nested_vendor_license_excluded(
     result = await crate_utils.process_crate_repository(url, "0.3.0")
     assert result["license_type"] == "MIT/Apache-2.0"
     assert result["license_file_license"] is None
+    assert result["copyright_notice"] is None
     assert "nested license files (not used for package license): libssh2/COPYING" in result["license_determination_reason"]
     assert "nested third party: libssh2/COPYING" in result["license_text"]
+
+
+@pytest.mark.asyncio
+async def test_package_source_header_supplies_copyright_without_license_file(monkeypatch, tmp_path):
+    source = _crate_file(
+        tmp_path, "cloud-hypervisor", "0.0.0",
+        'license = "Apache-2.0 AND BSD-3-Clause"',
+        {"src/main.rs": "// Copyright 2026 The Cloud Hypervisor Authors. All rights reserved.\n"},
+    )
+
+    async def fake_download(url, dest, **kwargs):
+        from shutil import copyfile
+        copyfile(source, dest)
+
+    monkeypatch.setattr(crate_archive, "download_archive_with_progress", fake_download)
+    url = "https://crates.io/api/v1/crates/cloud-hypervisor/0.0.0/download"
+    result = await crate_utils.process_crate_repository(url, "0.0.0")
+    assert result["copyright_notice"] == "Copyright 2026 The Cloud Hypervisor Authors. All rights reserved."
+    assert result["copyright_source"] == "src/main.rs"
 
 
 @pytest.mark.asyncio
