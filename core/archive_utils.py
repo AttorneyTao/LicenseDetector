@@ -130,12 +130,15 @@ async def download_archive_with_progress(
     url: str,
     dest_path: str,
     log_queue=None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> int:
     """
     流式下载归档到 dest_path，按节流规则输出 [DOWNLOAD_PROGRESS] 日志。
     返回下载的总字节数；下载失败抛出异常（网络错误会自动重试）。
     """
-    filename = _archive_filename(url)
+    # crates.io download URLs end in /download; the destination retains the
+    # actual crate name and version so concurrent progress logs stay attributable.
+    filename = os.path.basename(dest_path) or _archive_filename(url)
     last_error: Optional[Exception] = None
 
     for attempt in range(DOWNLOAD_RETRIES + 1):
@@ -146,7 +149,7 @@ async def download_archive_with_progress(
         try:
             timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT_SECONDS, sock_read=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url, allow_redirects=True) as resp:
+                async with session.get(url, allow_redirects=True, headers=headers) as resp:
                     resp.raise_for_status()
 
                     total_bytes = resp.content_length or 0
