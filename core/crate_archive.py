@@ -15,24 +15,15 @@ from .archive_utils import (
     download_archive_with_progress,
     extract_archive,
 )
-from .utils import analyze_license_content_async, prepare_license_text
+from .utils import (
+    analyze_license_content_async,
+    extract_copyright_info_async,
+    prepare_license_text,
+)
 
 logger = logging.getLogger(__name__)
 
 _LICENSE_NAME = re.compile(r"^(?:LICEN[CS]E|COPYING|NOTICE)(?:[._-].*)?$", re.I)
-_COPYRIGHT = re.compile(
-    r"^(?:Copyright\s+(?:\(c\)|©|(?:19|20)\d{2}\b)|©\s*(?:19|20)\d{2}\b).*",
-    re.I,
-)
-_COMMENT_PREFIX = re.compile(r"^\s*(?://+|/\*+|\*+|#+)\s*")
-
-
-def _first_copyright_line(content: str) -> Optional[str]:
-    for line in content.splitlines():
-        line = _COMMENT_PREFIX.sub("", line).strip()
-        if _COPYRIGHT.match(line):
-            return line
-    return None
 
 
 def _read_package_file(root: Path, relative: str) -> Optional[str]:
@@ -59,18 +50,9 @@ def _inspect_extracted_crate(
 
     declared_license = package.get("license")
     license_file = package.get("license-file")
-    tree = build_local_tree(str(root))
     paths = sorted(
-        item["path"] for item in tree
+        item["path"] for item in build_local_tree(str(root))
         if _LICENSE_NAME.fullmatch(Path(item["path"]).name)
-    )
-    own_source_paths = sorted(
-        item["path"] for item in tree
-        if (
-            item["path"].startswith("src/")
-            or item["path"] in {"lib.rs", "main.rs", "build.rs", "README.md"}
-        )
-        and not {"vendor", "third_party", "third-party"}.intersection(item["path"].split("/"))
     )
     root_license_paths = [path for path in paths if "/" not in path]
     evidence_paths = list(root_license_paths)
@@ -98,8 +80,6 @@ def _inspect_extracted_crate(
         "license_paths": paths,
         "texts": texts,
         "nested_texts": nested_texts,
-        "own_source_paths": own_source_paths,
-        "root": root,
     }
 
 
@@ -135,20 +115,12 @@ async def process_crate_download(
                     or license_analysis["licenses"][0]
                 )
 
-        notice = None
-        copyright_source = None
-        for path, content in texts.items():
-            notice = _first_copyright_line(content)
-            if notice:
-                copyright_source = path
-                break
-        if not notice:
-            for path in inspected["own_source_paths"]:
-                content = _read_package_file(inspected["root"], path)
-                notice = _first_copyright_line(content) if content else None
-                if notice:
-                    copyright_source = path
-                    break
+        readme_content = _read_package_file(Path(extracted), "README.md")
+        copyright_content = "\n\n".join(
+            [content for content in texts.values()]
+            + ([readme_content] if readme_content else [])
+        )
+        notice = await extract_copyright_info_async(copyright_content)
 
         root_files = [path for path in inspected["license_paths"] if "/" not in path]
         nested_files = [path for path in inspected["license_paths"] if "/" in path]
@@ -184,7 +156,6 @@ async def process_crate_download(
             "readme_license": None,
             "license_file_license": file_license,
             "copyright_notice": notice,
-            "copyright_source": copyright_source,
             "license_text": prepare_license_text(license_text),
             "status": "success",
             "license_determination_reason": reason,

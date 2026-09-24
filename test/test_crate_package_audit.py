@@ -8,14 +8,6 @@ import pytest
 from core import crate_archive, crate_utils
 
 
-def test_copyright_extraction_ignores_license_boilerplate():
-    content = (
-        "copyright notice that is included in or attached to the work\n"
-        "Copyright (c) 2014 The Rust Project Developers\n"
-    )
-    assert crate_archive._first_copyright_line(content) == "Copyright (c) 2014 The Rust Project Developers"
-
-
 def _crate_file(tmp_path, name, version, manifest_fields, files):
     path = tmp_path / f"{name}-{version}.crate"
     manifest = f'[package]\nname = "{name}"\nversion = "{version}"\n{manifest_fields}\n'
@@ -46,8 +38,13 @@ async def test_versioned_download_reads_license_file_in_crate(monkeypatch, tmp_p
         assert source_url.endswith("(LICENSE)")
         return {"licenses": ["BSD-2-Clause"], "spdx_expression": "BSD-2-Clause"}
 
+    async def fake_copyright(content):
+        assert "Copyright 2019 The Fuchsia Authors." in content
+        return "Copyright 2019 The Fuchsia Authors."
+
     monkeypatch.setattr(crate_archive, "download_archive_with_progress", fake_download)
     monkeypatch.setattr(crate_archive, "analyze_license_content_async", fake_analyze)
+    monkeypatch.setattr(crate_archive, "extract_copyright_info_async", fake_copyright)
     monkeypatch.setattr(crate_utils, "_fetch_crate_info", lambda name: pytest.fail("registry must not replace package"))
 
     url = "https://crates.io/api/v1/crates/zerocopy/0.6.1/download"
@@ -56,6 +53,7 @@ async def test_versioned_download_reads_license_file_in_crate(monkeypatch, tmp_p
     assert result["license_type"] == "BSD-2-Clause"
     assert result["license_file_license"] == "BSD-2-Clause"
     assert result["package_license_files"] == ["LICENSE"]
+    assert result["copyright_notice"] == "Copyright 2019 The Fuchsia Authors."
     assert "Downloaded crates.io package" in result["license_determination_reason"]
     assert calls == [(url, crate_utils.CRATES_IO_HEADERS["User-Agent"])]
 
@@ -73,6 +71,10 @@ async def test_manifest_expression_preserved_and_nested_vendor_license_excluded(
 
     monkeypatch.setattr(crate_archive, "download_archive_with_progress", fake_download)
     monkeypatch.setattr(crate_archive, "analyze_license_content_async", lambda *args: pytest.fail("manifest governs"))
+    async def fake_copyright(content):
+        assert content == ""  # Nested third-party text is not package-level evidence.
+        return None
+    monkeypatch.setattr(crate_archive, "extract_copyright_info_async", fake_copyright)
     url = "https://crates.io/api/v1/crates/libssh2-sys/0.3.0/download"
     result = await crate_utils.process_crate_repository(url, "0.3.0")
     assert result["license_type"] == "MIT/Apache-2.0"
@@ -83,7 +85,7 @@ async def test_manifest_expression_preserved_and_nested_vendor_license_excluded(
 
 
 @pytest.mark.asyncio
-async def test_package_source_header_supplies_copyright_without_license_file(monkeypatch, tmp_path):
+async def test_package_copyright_input_does_not_scan_source_tree(monkeypatch, tmp_path):
     source = _crate_file(
         tmp_path, "cloud-hypervisor", "0.0.0",
         'license = "Apache-2.0 AND BSD-3-Clause"',
@@ -95,10 +97,13 @@ async def test_package_source_header_supplies_copyright_without_license_file(mon
         copyfile(source, dest)
 
     monkeypatch.setattr(crate_archive, "download_archive_with_progress", fake_download)
+    async def fake_copyright(content):
+        assert content == ""
+        return None
+    monkeypatch.setattr(crate_archive, "extract_copyright_info_async", fake_copyright)
     url = "https://crates.io/api/v1/crates/cloud-hypervisor/0.0.0/download"
     result = await crate_utils.process_crate_repository(url, "0.0.0")
-    assert result["copyright_notice"] == "Copyright 2026 The Cloud Hypervisor Authors. All rights reserved."
-    assert result["copyright_source"] == "src/main.rs"
+    assert result["copyright_notice"] is None
 
 
 @pytest.mark.asyncio
