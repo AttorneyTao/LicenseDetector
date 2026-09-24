@@ -220,3 +220,39 @@ class TestProcessPypiRepositoryPassesNameAndUrl:
         assert result["status"] == "success"
         assert result["license_files"] == "https://pypi.org/project/pkg/1.0.0/"
         assert result["license_determination_reason"] == "Fetched from PyPI registry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("github_result", "expected_license", "expected_standardizations"),
+    [
+        ({"status": "success", "license_type": "Apache-2.0"}, "Apache-2.0", 0),
+        ({"status": "success", "license_type": None}, None, 0),
+        ({"status": "success"}, "MIT", 1),
+        ({"status": "error"}, "MIT", 1),
+    ],
+)
+async def test_license_standardization_only_when_pypi_fallback_needed(
+    monkeypatch, github_result, expected_license, expected_standardizations
+):
+    from core import pypi_utils, github_utils
+
+    metadata = _metadata({"Source": "https://github.com/foo/bar"}, description="")
+    monkeypatch.setattr(pypi_utils, "_fetch_pypi_metadata", lambda name: metadata)
+    monkeypatch.setattr(github_utils, "GitHubAPI", lambda: object())
+
+    async def fake_github(*args, **kwargs):
+        return github_result
+
+    monkeypatch.setattr(github_utils, "process_github_repository", fake_github)
+    calls = []
+
+    async def fake_standardize(info):
+        calls.append(info)
+        return "MIT"
+
+    monkeypatch.setattr(pypi_utils, "_standardize_license", fake_standardize)
+    result = await process_pypi_repository("https://pypi.org/project/pkg/", "1.0.0")
+    assert result["status"] == "success"
+    assert result["license_type"] == expected_license
+    assert calls == [metadata["info"]] * expected_standardizations

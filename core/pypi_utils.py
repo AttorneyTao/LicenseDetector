@@ -384,7 +384,6 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
         
         # 5. 基本信息提取
         info = metadata["info"]
-        license_type = await _standardize_license(info)  # 传入完整的 info 字典
         readme_content = info.get("description", "")
         
         # 6. 源码仓库 URL 处理
@@ -438,7 +437,11 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             logger.info("Using GitHub analysis results as primary source")
             
             # 基础信息保持PyPI的
-            final_license_type = github_result.get("license_type", license_type)
+            # 与原来的 dict.get 默认值语义一致：字段存在时即使为 None 也以 GitHub 为准。
+            if "license_type" in github_result:
+                final_license_type = github_result["license_type"]
+            else:
+                final_license_type = await _standardize_license(info)
             fallback_page = _pypi_project_page(package_name, resolved_version)
             final_license_files = github_result.get("license_files") or fallback_page
 
@@ -473,7 +476,7 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             # 没有GitHub结果或GitHub分析失败，使用PyPI信息
             logger.info("Using PyPI analysis results as primary source")
             
-            final_license_type = license_type
+            final_license_type = await _standardize_license(info)
             final_license_files = _pypi_project_page(package_name, resolved_version)
             final_license_analysis = None
             final_has_license_conflict = None
