@@ -145,9 +145,9 @@ def analyze_license_content(content: str, source_url: Optional[str] = None) -> D
             - license_relationship: How main and third-party licenses relate
             - confidence: Analysis confidence score (0.0-1.0)
     """
-    if not USE_LLM:
+    if not USE_LLM or not content or not content.strip():
         
-        logger.info("LLM analysis is disabled, returning empty analysis")
+        logger.info("LLM license analysis disabled or input empty; returning empty analysis")
         return {
             "licenses": [],
             "is_dual_licensed": False,
@@ -204,8 +204,8 @@ def analyze_license_content(content: str, source_url: Optional[str] = None) -> D
 
 
 async def analyze_license_content_async(content: str, source_url: Optional[str] = None) -> Dict[str, Any]:
-    if not USE_LLM:
-        logger.info("LLM analysis is disabled, returning empty analysis")
+    if not USE_LLM or not content or not content.strip():
+        logger.info("LLM license analysis disabled or input empty; returning empty analysis")
         return {
             "licenses": [],
             "is_dual_licensed": False,
@@ -534,7 +534,7 @@ def extract_copyright_info(content: str) -> Optional[str]:
         Optional[str]: Copyright notice if found, None otherwise
             Example: "Copyright (c) 2024 John Doe"
     """
-    if not USE_LLM:
+    if not USE_LLM or not content or not content.strip():
         return None
 
     try:
@@ -569,7 +569,7 @@ async def extract_copyright_info_async(content: str) -> Optional[str]:
 
     This should be used when called from within an already-running event loop.
     """
-    if not USE_LLM:
+    if not USE_LLM or not content or not content.strip():
         return None
 
     try:
