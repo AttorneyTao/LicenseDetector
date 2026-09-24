@@ -562,18 +562,6 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
     author = ", ".join(owners) if owners else f"{crate_name} original author and authors"
     logger.debug("Author: %s", author)
 
-    # 版权信息
-    try:
-        copyright_notice = await extract_copyright_info_async(readme_content or "")
-    except Exception:
-        copyright_notice = extract_copyright_info(readme_content or "")
-    
-    logger.debug("Copyright notice: %s", copyright_notice)
-
-    if not copyright_notice:
-        copyright_notice = f"Copyright(c) {dt.year} {author}".strip()
-        logger.debug("Fallback copyright notice: %s", copyright_notice)
-
     # 构建许可证文件 URL
     license_files = f"{CRATES_IO_BASE}/crates/{crate_name}/{resolved_version}"
     logger.debug("License files URL: %s", license_files)
@@ -650,16 +638,18 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
             github_scan_success = False
             logger.error("Failed to call process_github_repository: %s", e, exc_info=True)
 
-    # 处理 copyright_notice 逻辑
-    final_copyright_notice = copyright_notice
-    if github_copyright_notice:
-        if "original author and authors" in github_copyright_notice:
-            logger.info(
-                "GitHub copyright_notice contains 'original author and authors', keep crate copyright_notice"
-            )
-        else:
-            final_copyright_notice = github_copyright_notice
-            logger.info("Replaced copyright_notice with GitHub result")
+    # GitHub 的有效版权信息优先；只有缺失或为通用占位文本时才分析 crate README。
+    if github_copyright_notice and "original author and authors" not in github_copyright_notice:
+        final_copyright_notice = github_copyright_notice
+        logger.info("Using GitHub copyright_notice; skipped crate README extraction")
+    else:
+        try:
+            final_copyright_notice = await extract_copyright_info_async(readme_content or "")
+        except Exception:
+            final_copyright_notice = extract_copyright_info(readme_content or "")
+        if not final_copyright_notice:
+            final_copyright_notice = f"Copyright(c) {dt.year} {author}".strip()
+        logger.debug("Crate fallback copyright notice: %s", final_copyright_notice)
 
     final_license_analysis = (
         github_fields["license_analysis"]
