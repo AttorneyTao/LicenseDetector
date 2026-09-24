@@ -18,7 +18,6 @@ from .utils import (
     is_blank_value,
     prepare_license_text,
 )
-from .crate_archive import process_crate_download
 from bs4 import BeautifulSoup
 import tempfile
 import shutil
@@ -437,6 +436,10 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
     """
     logger = logging.getLogger("main")
 
+    reference = parse_crates_io_reference(url)
+    if reference and reference[1] and urlparse(url).path.rstrip("/").endswith("/download"):
+        url = f"{CRATES_IO_BASE}/crates/{reference[0]}/{reference[1]}"
+
     logger.info("Starting processing for %s (requested version=%s)", url, version)
 
     crate_name = _parse_crate_name(url)
@@ -448,32 +451,6 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
         version,
         normalized_version,
     )
-
-    reference = parse_crates_io_reference(url)
-    if reference and urlparse(url).path.rstrip("/").endswith("/download"):
-        package_version = reference[1]
-        if normalized_version != package_version:
-            message = (
-                f"输入版本 {normalized_version} 与 crates.io 下载链接版本 "
-                f"{package_version} 不一致"
-            )
-            logger.error("[CRATE_PACKAGE] %s: %s", message, url)
-            return {"status": "error", "input_url": url, "error": message}
-        try:
-            return await process_crate_download(
-                url, crate_name, package_version, headers=CRATES_IO_HEADERS
-            )
-        except Exception as exc:
-            logger.error("[CRATE_PACKAGE] 发布包审核失败 %s: %s", url, exc, exc_info=True)
-            return {
-                "status": "error",
-                "input_url": url,
-                "component_name": crate_name,
-                "input_version": version,
-                "resolved_version": package_version,
-                "error": f"发布包下载或审核失败: {exc}",
-                "license_determination_reason": "Crates.io package audit failed",
-            }
 
     # 获取 crate 信息
     try:
