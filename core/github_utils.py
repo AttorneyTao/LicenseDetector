@@ -1769,8 +1769,26 @@ async def process_github_repository(
                 substep_logger.info(f"Selected primary license file: {selected_license_file['path']}")
                 license_content = await api.get_file_content(owner, repo, selected_license_file['path'], resolved_version)
                 if license_content:
-                    # 使用完整的GitHub URL
-                    license_file_analysis_result = await analyze_license_content_async(license_content, selected_license_file['url'])
+                    # Step 5 已分析同一版本、同一文件的相同正文时复用结果；
+                    # 内容、文件身份或首次分析任一不匹配时仍重新分析。
+                    same_repo_license = (
+                        license_info
+                        and isinstance(license_file_analysis, dict)
+                        and license_file_analysis.get("licenses")
+                        and license_content == repo_license_content
+                        and (
+                            license_info.get("path") == selected_license_file["path"]
+                            or license_url == selected_license_file["url"]
+                        )
+                    )
+                    if same_repo_license:
+                        license_file_analysis_result = dict(license_file_analysis)
+                        license_file_analysis_result["source_url"] = selected_license_file["url"]
+                        substep_logger.info("Reused Step 5 analysis of the same LICENSE file")
+                    else:
+                        license_file_analysis_result = await analyze_license_content_async(
+                            license_content, selected_license_file["url"]
+                        )
                         
             if license_file_analysis_result is not None and "thirdparty_dirs" not in license_file_analysis_result:
                 license_file_analysis_result["thirdparty_dirs"] = thirdparty_dirs
