@@ -566,15 +566,13 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
     author = ", ".join(owners) if owners else f"{crate_name} original author and authors"
     logger.debug("Author: %s", author)
 
-    # 构建许可证文件 URL
+    # 最终展示优先使用对应版本的 crates.io 包主页；GitHub 仍用于许可证审核。
     license_files = f"{CRATES_IO_BASE}/crates/{crate_name}/{resolved_version}"
     logger.debug("License files URL: %s", license_files)
-    final_license_file = license_files
     final_used_default_branch = used_default_branch
 
     # 如果 repo_url 为 GitHub 地址，调用 process_github_repository 补充元数据
     github_fields = {
-        "license_files": license_files,
         "license_analysis": None,
         "has_license_conflict": None,
         "readme_license": None,
@@ -609,18 +607,6 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
                 github_fields["used_default_branch"] = gh_used_default_branch
                 if gh_used_default_branch is not None:
                     final_used_default_branch = gh_used_default_branch
-
-                # license_files 字段替换逻辑
-                if gh_used_default_branch is False and github_result.get("license_files"):
-                    final_license_file = github_result.get("license_files", license_files)
-                    logger.info(
-                        "Replaced license_files with GitHub result because used_default_branch is False"
-                    )
-                else:
-                    final_license_file = license_files
-                    logger.info(
-                        "Kept original license_files because used_default_branch is True or missing"
-                    )
 
                 # 其他字段直接赋值
                 for key in [
@@ -680,7 +666,7 @@ async def process_crate_repository(url: str, version: Optional[str] = None) -> D
         "resolved_version": resolved_version,
         "used_default_branch": final_used_default_branch,
         "component_name": crate_name,
-        "license_files": final_license_file,
+        "license_files": license_files,
         "license_analysis": final_license_analysis,
         "license_type": license_type,
         "has_license_conflict": final_has_license_conflict,

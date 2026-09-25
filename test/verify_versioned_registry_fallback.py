@@ -70,7 +70,7 @@ BATCHES = {
         {"github_url": "https://pkg.go.dev/go.uber.org/atomic", "version": "1.9.0", "name": "atomic"},
         {"github_url": "https://pkg.go.dev/cloud.google.com/go/storage", "version": "1.30.1", "name": "storage"},
     ]),
-    # npm / crates.io 回归对照：行为应保持不变（tag 命中 → blob 链接）
+    # npm / crates.io 回归对照：npm 保留既有行为；crate 展示对应版本的包主页
     "2": lambda: run_repos([
         {"github_url": "https://www.npmjs.com/package/left-pad", "version": "1.3.0", "name": "left-pad"},
         {"github_url": "https://crates.io/crates/serde", "version": "1.0.190", "name": "serde"},
