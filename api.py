@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import existing modules
 from core.github_utils import GitHubAPI, process_github_repository
 from core.config import MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_risk_level, fill_blank_copyright_notices
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices
 from core.logging_utils import setup_logging
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo, build_versioned_pkggo_license_url
@@ -1241,8 +1241,8 @@ def _generate_output(results):
         axis=1
     )
 
-    # Derive risk_level from the final concluded_license
-    output_df["risk_level"] = output_df["concluded_license"].apply(get_risk_level)
+    output_df["concluded_license_semicolon"] = output_df["concluded_license"].apply(format_concluded_license_semicolon)
+    output_df["risk_level"] = output_df["concluded_license"].apply(get_output_risk_levels)
 
     # Ensure license_text column always exists in the output
     if "license_text" not in output_df.columns:

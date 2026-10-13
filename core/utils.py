@@ -1047,6 +1047,91 @@ def get_risk_level(concluded_license: Optional[str]) -> str:
     return _label(risk or config["default"])
 
 
+def format_concluded_license_semicolon(concluded_license: Optional[str]) -> Optional[str]:
+    """Replace AND with a semicolon while retaining the AND Others marker."""
+    if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
+        return concluded_license
+    return re.sub(
+        r"(?i)\s*(?<![\w-])AND(?![\w-])(?!(?:\s*)Others\b)\s*",
+        "; ",
+        str(concluded_license),
+    )
+
+
+def _parse_output_risk_term(tokens: List[str], pos: int, config: Dict[str, Any]):
+    if pos >= len(tokens):
+        raise _SpdxSyntaxError("表达式意外结束")
+    token = tokens[pos]
+    if token == "(":
+        risks, pos = _parse_output_risk_and(tokens, pos + 1, config)
+        if pos >= len(tokens) or tokens[pos] != ")":
+            raise _SpdxSyntaxError("括号不匹配")
+        return risks, pos + 1
+    if token == ")" or token.upper() in _SPDX_OPERATORS:
+        raise _SpdxSyntaxError(f"意外的 token: {token}")
+    pos += 1
+    if pos < len(tokens) and tokens[pos].upper() == "WITH":
+        if pos + 1 >= len(tokens) or tokens[pos + 1] in ("(", ")") or tokens[pos + 1].upper() in _SPDX_OPERATORS:
+            raise _SpdxSyntaxError("WITH 缺少例外条款")
+        pos += 2
+    risk = _risk_of_token(token, config)
+    return ([risk] if risk is not None else []), pos
+
+
+def _parse_output_risk_or(tokens: List[str], pos: int, config: Dict[str, Any]):
+    """Resolve OR within one AND item by choosing its least risky branch."""
+    branches = []
+    risks, pos = _parse_output_risk_term(tokens, pos, config)
+    branches.append(risks)
+    while pos < len(tokens) and tokens[pos].upper() == "OR":
+        risks, pos = _parse_output_risk_term(tokens, pos + 1, config)
+        branches.append(risks)
+    if len(branches) == 1:
+        return branches[0], pos
+    candidates = [branch for branch in branches if branch]
+    if not candidates:
+        return [], pos
+    determinate = [
+        branch for branch in candidates
+        if _combine_and(branch, config) != config["default"]
+    ]
+    selected = max(
+        determinate or candidates,
+        key=lambda branch: _severity_index(_combine_and(branch, config), config["severity_order"]),
+    )
+    return selected, pos
+
+
+def _parse_output_risk_and(tokens: List[str], pos: int, config: Dict[str, Any]):
+    """Keep the risk of each AND item in source order; OR binds first."""
+    risks, pos = _parse_output_risk_or(tokens, pos, config)
+    all_risks = list(risks)
+    while pos < len(tokens) and tokens[pos].upper() == "AND":
+        risks, pos = _parse_output_risk_or(tokens, pos + 1, config)
+        all_risks.extend(risks)
+    return all_risks, pos
+
+
+def get_output_risk_levels(concluded_license: Optional[str]) -> str:
+    """List AND risks separately after resolving OR alternatives."""
+    config = _load_risk_config()
+    labels = config["labels"]
+    if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
+        return labels.get(config["default"], config["default"])
+    expr = str(concluded_license).strip()
+    if not expr:
+        return labels.get(config["default"], config["default"])
+    tokens = _tokenize_spdx(expr)
+    try:
+        risks, pos = _parse_output_risk_and(tokens, 0, config)
+        if pos != len(tokens):
+            raise _SpdxSyntaxError(f"存在无法解析的多余 token: {tokens[pos]}")
+    except _SpdxSyntaxError as exc:
+        logger.warning("输出风险表达式解析失败，沿用原风险结果: %s (%s)", expr, exc)
+        return get_risk_level(expr)
+    return ";".join(labels.get(level, level) for level in risks) if risks else labels.get(config["default"], config["default"])
+
+
 def extract_thirdparty_dirs_column(df):
     """
     在DataFrame中增加一列thirdparty_dirs。

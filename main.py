@@ -38,7 +38,7 @@ from tqdm import tqdm
 from core.logging_utils import setup_logging
 from core.github_utils import GitHubAPI
 from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_risk_level, fill_blank_copyright_notices
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices
 from core.go_utils import  get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import parse_crates_io_reference, process_crate_repository
@@ -539,9 +539,11 @@ async def main_async(font_mode: bool = False):
             axis=1
         )
 
+        output_df["concluded_license_semicolon"] = output_df["concluded_license"].apply(format_concluded_license_semicolon)
+
         # 根据 concluded_license 推导 risk_level
         logger.info("生成 risk_level...")
-        output_df["risk_level"] = output_df["concluded_license"].apply(get_risk_level)
+        output_df["risk_level"] = output_df["concluded_license"].apply(get_output_risk_levels)
 
         # 确保 license_text 列始终存在（即使本批没有任何组件拿到 license 原文）
         if "license_text" not in output_df.columns:
