@@ -20,6 +20,7 @@ import re
 # Import Required Libraries Section
 # ============================================================================
 import os
+from contextlib import nullcontext
 import time
 import logging
 from datetime import datetime
@@ -36,9 +37,10 @@ from tqdm import tqdm
 # Import internal packages
 #=============================================================================
 from core.logging_utils import setup_logging
+from core.purl_fallback import retry_with_purl
 from core.github_utils import GitHubAPI
 from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices, read_input_excel, get_input_metadata, INPUT_METADATA_FIELDS
 from core.go_utils import  get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import parse_crates_io_reference, process_crate_repository
@@ -184,13 +186,14 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
     async def process_with_progress(pbar):
         nonlocal last_save_time, running_tasks
 
-        async def sem_task(row, index):
+        async def sem_task(row, index, allow_purl_fallback=True):
             nonlocal last_save_time, running_tasks
-            async with sem:
+            async with sem if allow_purl_fallback else nullcontext():
                 name = None  # 保证异常时也能访问 name
                 try:
-                    running_tasks += 1
-                    logger.info(f"当前并发任务数: {running_tasks}")
+                    if allow_purl_fallback:
+                        running_tasks += 1
+                        logger.info(f"当前并发任务数: {running_tasks}")
 
                     original_url = row["github_url"]  # 保存原始URL
                     # purl 输入在此翻译为对应生态的注册表 URL，并回填 version / name
@@ -354,9 +357,24 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                             "input_name": name  # 错误时也保留 input_name
                         }
                 finally:
-                    running_tasks -= 1
-                    logger.info(f"任务完成，当前并发任务数: {running_tasks}")
+                    if index in results:
+                        if allow_purl_fallback:
+                            async def retry(purl):
+                                retry_row = row.copy()
+                                retry_row["github_url"] = purl
+                                await sem_task(retry_row, index, allow_purl_fallback=False)
+                                return results[index]
 
+                            results[index] = await retry_with_purl(row, results[index], retry)
+                            results[index]["input_url"] = row.get("github_url")
+                            results[index]["input_name"] = name
+                        results[index].update(get_input_metadata(row))
+                    if allow_purl_fallback:
+                        running_tasks -= 1
+                        logger.info(f"任务完成，当前并发任务数: {running_tasks}")
+
+                if not allow_purl_fallback:
+                    return
                 # 更新进度条
                 pbar.update(1)
 
@@ -438,6 +456,8 @@ async def process_all_fonts(api, df, max_concurrency=MAX_CONCURRENCY):
                     "input_name": name,
                 }
             finally:
+                if index in results:
+                    results[index].update(get_input_metadata(row))
                 pbar.update(1)
                 current_time = time.time()
                 if current_time - last_save_time >= SAVE_INTERVAL:
@@ -484,7 +504,7 @@ async def main_async(font_mode: bool = False):
 
         # 读取输入文件
         logger.info("Step 2: Reading input Excel file")
-        df = pd.read_excel("input.xlsx")
+        df = read_input_excel("input.xlsx")
         logger.info(f"Read {len(df)} rows from input file")
         print(f"📄 已读取 {len(df)} 行输入（模式：{'字体扫描' if font_mode else '软件包'}）")
 
@@ -550,6 +570,10 @@ async def main_async(font_mode: bool = False):
             output_df["license_text"] = None
         if "copyright_notice" not in output_df.columns:
             output_df["copyright_notice"] = None
+
+        for field in INPUT_METADATA_FIELDS:
+            if field not in output_df.columns:
+                output_df[field] = None
 
         # 重排列顺序
         logger.info("重排列顺序...")

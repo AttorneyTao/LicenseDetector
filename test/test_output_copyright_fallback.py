@@ -47,7 +47,7 @@ async def test_cli_excel_uses_same_final_copyright_check(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(main, "initialize_api", fake_initialize_api)
     monkeypatch.setattr(main, "process_all_repos", fake_process_all_repos)
-    monkeypatch.setattr(main.pd, "read_excel", lambda path: pd.DataFrame([{}, {}]))
+    monkeypatch.setattr(main, "read_input_excel", lambda path: pd.DataFrame([{}, {}]))
 
     await main.main_async()
 

@@ -10,6 +10,32 @@ import json
 import pandas as pd
 
 
+INPUT_METADATA_FIELDS = ("package_manager", "serial_number")
+
+
+def read_input_excel(path) -> pd.DataFrame:
+    """保留原有输入列解析方式，新增标识字段按文本读取。"""
+    with pd.ExcelFile(path) as workbook:
+        df = pd.read_excel(workbook)
+        fields = [field for field in INPUT_METADATA_FIELDS if field in df.columns]
+        if fields:
+            metadata = pd.read_excel(
+                workbook, usecols=fields, dtype=str, keep_default_na=False
+            )
+            for field in fields:
+                df[field] = metadata[field]
+    return df
+
+
+def get_input_metadata(row) -> Dict[str, Optional[str]]:
+    """按原始输入行透传可选字段，缺失值统一留空。"""
+    metadata = {}
+    for field in INPUT_METADATA_FIELDS:
+        value = row.get(field)
+        metadata[field] = None if pd.isna(value) else str(value)
+    return metadata
+
+
 
 
 
@@ -1047,15 +1073,33 @@ def get_risk_level(concluded_license: Optional[str]) -> str:
     return _label(risk or config["default"])
 
 
+def _output_license_items(concluded_license: Optional[str]) -> tuple[List[str], str]:
+    """生成展示列及风险列共用的去重项目，保留首次出现顺序。"""
+    if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
+        return [], ""
+    expr = re.sub(r"[()]", " ", str(concluded_license))
+    # Others 是整行的第三方提示；先摘出，避免重复许可证带提示时无法去重。
+    marker_pattern = r"(?i)(?<![\w-])AND(?![\w-])\s+Others\b"
+    markers = re.findall(marker_pattern, expr)
+    marker = " ".join(markers[0].split()) if markers else ""
+    expr = re.sub(marker_pattern, " ", expr)
+    expr = re.sub(r"(?i)(?<![\w-])AND(?![\w-])", ";", expr)
+    items, seen = [], set()
+    for part in expr.split(";"):
+        item = " ".join(part.split())
+        key = item.casefold()
+        if item and key not in seen:
+            seen.add(key)
+            items.append(item)
+    return items, marker
+
+
 def format_concluded_license_semicolon(concluded_license: Optional[str]) -> Optional[str]:
-    """Replace AND with a semicolon while retaining the AND Others marker."""
+    """展示无括号的去重分号项目，并保留 AND Others 提示。"""
     if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
         return concluded_license
-    return re.sub(
-        r"(?i)\s*(?<![\w-])AND(?![\w-])(?!(?:\s*)Others\b)\s*",
-        "; ",
-        str(concluded_license),
-    )
+    items, marker = _output_license_items(concluded_license)
+    return " ".join(part for part in ("; ".join(items), marker) if part)
 
 
 def _parse_output_risk_term(tokens: List[str], pos: int, config: Dict[str, Any]):
@@ -1113,23 +1157,24 @@ def _parse_output_risk_and(tokens: List[str], pos: int, config: Dict[str, Any]):
 
 
 def get_output_risk_levels(concluded_license: Optional[str]) -> str:
-    """List AND risks separately after resolving OR alternatives."""
+    """按展示列去重后的项目逐项计算风险，OR 取较低风险。"""
     config = _load_risk_config()
     labels = config["labels"]
-    if concluded_license is None or (isinstance(concluded_license, float) and pd.isna(concluded_license)):
-        return labels.get(config["default"], config["default"])
-    expr = str(concluded_license).strip()
-    if not expr:
-        return labels.get(config["default"], config["default"])
-    tokens = _tokenize_spdx(expr)
-    try:
-        risks, pos = _parse_output_risk_and(tokens, 0, config)
-        if pos != len(tokens):
-            raise _SpdxSyntaxError(f"存在无法解析的多余 token: {tokens[pos]}")
-    except _SpdxSyntaxError as exc:
-        logger.warning("输出风险表达式解析失败，沿用原风险结果: %s (%s)", expr, exc)
-        return get_risk_level(expr)
-    return ";".join(labels.get(level, level) for level in risks) if risks else labels.get(config["default"], config["default"])
+    default_label = labels.get(config["default"], config["default"])
+    items, _ = _output_license_items(concluded_license)
+    output = []
+    for item in items:
+        tokens = _tokenize_spdx(item)
+        try:
+            risks, pos = _parse_output_risk_and(tokens, 0, config)
+            if pos != len(tokens):
+                raise _SpdxSyntaxError(f"存在无法解析的多余 token: {tokens[pos]}")
+            level = _combine_and(risks, config)
+            output.append(labels.get(level, level) if level is not None else default_label)
+        except _SpdxSyntaxError as exc:
+            logger.warning("输出风险项目解析失败，沿用原风险结果: %s (%s)", item, exc)
+            output.append(get_risk_level(item))
+    return ";".join(output) if output else default_label
 
 
 def extract_thirdparty_dirs_column(df):

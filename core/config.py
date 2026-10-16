@@ -27,6 +27,8 @@ MAX_CONCURRENCY = 5
 
 # 结果列的显示顺序配置
 RESULT_COLUMNS_ORDER = [
+    "serial_number",
+    "package_manager",
     "input_url",
     "repo_url",
     "component_name",

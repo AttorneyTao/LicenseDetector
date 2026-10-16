@@ -3,6 +3,7 @@ FastAPI application for exposing license analysis as a service
 """
 
 import os
+from contextlib import nullcontext
 import sys
 import logging
 import asyncio
@@ -23,8 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 # Import existing modules
 from core.github_utils import GitHubAPI, process_github_repository
 from core.config import MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
-from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices
+from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices, read_input_excel, get_input_metadata, INPUT_METADATA_FIELDS
 from core.logging_utils import setup_logging
+from core.purl_fallback import retry_with_purl
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
@@ -360,7 +362,7 @@ async def analyze_licenses(
 
         # 读取Excel文件
         try:
-            df = pd.read_excel(temp_input)
+            df = read_input_excel(temp_input)
             logger.info(f"读取了 {len(df)} 行数据")
         except Exception as e:
             raise HTTPException(
@@ -487,7 +489,7 @@ async def analyze_and_download(
 
         # 读取Excel文件
         try:
-            df = pd.read_excel(temp_input)
+            df = read_input_excel(temp_input)
             logger.info(f"读取了 {len(df)} 行数据")
         except Exception as e:
             raise HTTPException(
@@ -616,7 +618,7 @@ async def analyze_with_stream(
 
                 # 读取Excel文件
                 try:
-                    df = pd.read_excel(temp_input)
+                    df = read_input_excel(temp_input)
                     yield f"[INFO] 读取了 {len(df)} 行数据\n"
                 except Exception as e:
                     yield f"[ERROR] 无法读取Excel文件: {str(e)}\n"
@@ -763,7 +765,7 @@ async def analyze_with_stream_and_email(
 
                 # 读取Excel文件
                 try:
-                    df = pd.read_excel(temp_input)
+                    df = read_input_excel(temp_input)
                     yield f"[INFO] 读取了 {len(df)} 行数据\n"
                 except Exception as e:
                     yield f"[ERROR] 无法读取Excel文件: {str(e)}\n"
@@ -921,7 +923,7 @@ async def analyze_with_stream_and_download(
             
             # 读取Excel文件
             try:
-                df = pd.read_excel(temp_input)
+                df = read_input_excel(temp_input)
                 logger.info(f"读取了 {len(df)} 行数据")
             except Exception as e:
                 raise HTTPException(
@@ -1010,9 +1012,9 @@ async def _process_repositories(api, df, log_queue=None):
                 pass
         logger.info(msg)
     
-    async def process_single(row, index):
+    async def process_single(row, index, allow_purl_fallback=True):
         nonlocal completed_count
-        async with sem:
+        async with sem if allow_purl_fallback else nullcontext():
             name = None
             try:
                 original_url = row.get("github_url")
@@ -1186,10 +1188,23 @@ async def _process_repositories(api, df, log_queue=None):
                         "input_name": name
                     }
             finally:
-                # 更新进度计数：每完成一个就上报，保证前端进度条平滑准确
-                async with lock:
-                    completed_count += 1
-                    await log_progress()
+                if index in results:
+                    if allow_purl_fallback:
+                        async def retry(purl):
+                            retry_row = row.copy()
+                            retry_row["github_url"] = purl
+                            await process_single(retry_row, index, allow_purl_fallback=False)
+                            return results[index]
+
+                        results[index] = await retry_with_purl(row, results[index], retry)
+                        results[index]["input_url"] = row.get("github_url")
+                        results[index]["input_name"] = name
+                    results[index].update(get_input_metadata(row))
+                # 每个原始输入行只更新一次进度；重试沿用已占用的并发槽位。
+                if allow_purl_fallback:
+                    async with lock:
+                        completed_count += 1
+                        await log_progress()
     
     # Process all rows
     tasks = [process_single(row, idx) for idx, row in df.iterrows()]
@@ -1249,6 +1264,10 @@ def _generate_output(results):
         output_df["license_text"] = None
     if "copyright_notice" not in output_df.columns:
         output_df["copyright_notice"] = None
+
+    for field in INPUT_METADATA_FIELDS:
+        if field not in output_df.columns:
+            output_df[field] = None
 
     # Reorder columns
     existing_columns = [col for col in RESULT_COLUMNS_ORDER if col in output_df.columns]

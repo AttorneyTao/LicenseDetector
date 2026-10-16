@@ -104,6 +104,27 @@ pip install -e .
 - `github_url`: GitHub仓库URL、包管理器URL，或 [purl](https://github.com/package-url/purl-spec)（Package URL）
 - `version`: （可选）指定分析的版本
 - `name`: （可选）组件名称
+- `package_manager`: （可选）包管理器，如 `cargo`、`npm`，按输入内容带入输出
+- `serial_number`: （可选）流水号，按文本填写，以保留前导零和长编号
+
+本地输入及所有 API 上传 Excel 接口均支持这两个可选字段。原有三列格式继续适用，缺列或空值在输出中留空。`serial_number` 仅标识输入记录；`package_manager` 还用于下述最终 purl 回退。输出表格的前两列依次为 `serial_number`、`package_manager`，随后保留原有列顺序。
+
+本地 `input.xlsx` 的列顺序为 `name`、`version`、`github_url`、`package_manager`、`serial_number`。流水号含前导零或超过 15 位时，请在录入前将单元格设为文本；Excel 已经丢失的数字无法通过读取恢复。
+
+#### 分号许可证列与风险等级
+
+`concluded_license_semicolon` 将 `AND` 转为分号、移除分组括号，并按完整分号项目去重，保留首次出现顺序和写法（比较时忽略大小写及多余空格）。`OR` 组合及 `WITH` 例外条款作为项目内容保留，`AND Others` 提示保留在末尾。原始 `concluded_license` 保留完整表达式。
+
+`risk_level` 按同一份去重项目逐项匹配，项目内的 `OR` 取较低风险；多个项目即使风险相同，也分别列示。例如 `MIT AND (Apache-2.0 AND MIT)` 展示为 `MIT; Apache-2.0`，风险为 `低风险;低风险`。`AND Others` 不额外占用一个风险项。
+
+#### 最终 purl 回退
+
+软件包审核在现有流程（包括归档兜底）未取得许可证时，或指定版本的 GitHub 审核回退到默认分支时，使用 `package_manager`、`name` 和 `version` 构造 purl，复用现有入口再审核一次。本地与 API 输入行为一致。
+
+- 每行最多回退一次；原输入已是 purl 时不重复进入同一流程。
+- 指定版本时，只有回退结果取得许可证且返回对应版本的链接才采用该结果；原结果已有准确版本的链接时优先保留。回退失败或返回其他版本时保留原结果。
+- 支持现有注册表类型 `cargo`、`npm`、`pypi`、`maven`、`golang`、`pub`、`nuget`、`deb`，以及常见包管理器别名（如 `pip`、`go`、`gradle`、`apt`）。
+- 包管理器或包名缺失、类型不支持或定位信息不完整时跳过回退并记录日志。Maven 名称需含 `groupId:artifactId`（或 `groupId/artifactId`），Go 名称需填完整模块路径，npm scoped 包需保留 `@scope/name`。
 
 #### 使用 purl 作为输入
 
