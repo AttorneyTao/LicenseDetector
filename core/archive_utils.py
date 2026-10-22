@@ -335,6 +335,7 @@ async def analyze_extracted_directory(
         prepare_license_text,
     )
     from .github_utils import select_primary_license_file
+    from .license_links import EVIDENCE_KEY, content_digest
 
     tree = build_local_tree(root_dir)
     logger.info(f"[ARCHIVE] 解压目录共 {len(tree)} 个文件，开始本地 license 分析: {root_dir}")
@@ -390,6 +391,7 @@ async def analyze_extracted_directory(
             "used_default_branch": False,
             "component_name": component_name,
             "license_files": source_url,
+            EVIDENCE_KEY: {"path": selected_rel_path, "digest": content_digest(license_content)},
             "license_analysis": license_analysis,
             "license_type": license_type,
             "has_license_conflict": False,
@@ -424,6 +426,7 @@ async def analyze_extracted_directory(
                 "used_default_branch": False,
                 "component_name": component_name,
                 "license_files": source_url,
+                EVIDENCE_KEY: {"path": readme_path, "digest": content_digest(readme_content)},
                 "license_analysis": readme_analysis,
                 "license_type": license_type,
                 "has_license_conflict": False,

@@ -27,6 +27,7 @@ from core.config import MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column, analyze_license_content_async, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices, read_input_excel, get_input_metadata, INPUT_METADATA_FIELDS
 from core.logging_utils import setup_logging
 from core.purl_fallback import retry_with_purl
+from core.license_links import prefer_license_webpage
 from core.email_utils import send_analysis_result, EmailConfig
 from core.go_utils import get_github_url_from_pkggo, build_versioned_pkggo_license_url
 from core.npm_utils import is_npm_package_url, process_npm_repository
@@ -1016,6 +1017,7 @@ async def _process_repositories(api, df, log_queue=None):
         nonlocal completed_count
         async with sem if allow_purl_fallback else nullcontext():
             name = None
+            link_context = None
             try:
                 original_url = row.get("github_url")
                 # purl 输入在此翻译为对应生态的注册表 URL，并回填 version / name
@@ -1151,6 +1153,7 @@ async def _process_repositories(api, df, log_queue=None):
                             pass
                     archive_result = await process_direct_archive_url(url, version, name, log_queue=log_queue)
                     if archive_result:
+                        link_context = result
                         result = archive_result
 
                 result["input_name"] = name
@@ -1197,6 +1200,7 @@ async def _process_repositories(api, df, log_queue=None):
                             return results[index]
 
                         results[index] = await retry_with_purl(row, results[index], retry)
+                        results[index] = await prefer_license_webpage(row, results[index], link_context)
                         results[index]["input_url"] = row.get("github_url")
                         results[index]["input_name"] = name
                     results[index].update(get_input_metadata(row))

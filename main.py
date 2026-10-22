@@ -38,6 +38,7 @@ from tqdm import tqdm
 #=============================================================================
 from core.logging_utils import setup_logging
 from core.purl_fallback import retry_with_purl
+from core.license_links import prefer_license_webpage
 from core.github_utils import GitHubAPI
 from core.config import LLM_CONFIG, SCORE_THRESHOLD, MAX_CONCURRENCY, RESULT_COLUMNS_ORDER
 from core.utils import get_concluded_license, extract_thirdparty_dirs_column, get_output_risk_levels, format_concluded_license_semicolon, fill_blank_copyright_notices, read_input_excel, get_input_metadata, INPUT_METADATA_FIELDS
@@ -190,6 +191,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
             nonlocal last_save_time, running_tasks
             async with sem if allow_purl_fallback else nullcontext():
                 name = None  # 保证异常时也能访问 name
+                link_context = None
                 try:
                     if allow_purl_fallback:
                         running_tasks += 1
@@ -325,6 +327,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
                         archive_result = await process_direct_archive_url(url, version, name)
                         if archive_result:
+                            link_context = result
                             result = archive_result
 
                     # 新增：保留 input_name 字段
@@ -366,6 +369,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                 return results[index]
 
                             results[index] = await retry_with_purl(row, results[index], retry)
+                            results[index] = await prefer_license_webpage(row, results[index], link_context)
                             results[index]["input_url"] = row.get("github_url")
                             results[index]["input_name"] = name
                         results[index].update(get_input_metadata(row))
