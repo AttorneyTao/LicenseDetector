@@ -1132,10 +1132,12 @@ async def _process_repositories(api, df, log_queue=None):
                         if result is None:
                             logger.info("POM 未提供许可证，回退至源码仓库发现流程")
                             result = await process_github_repository(api, url, version, name=name)
-                            if result.get("status") == "success" and result.get("used_default_branch"):
-                                versioned_url = await build_versioned_maven_license_url(url, version)
+                            if result.get("status") == "success":
+                                versioned_url = await build_versioned_maven_license_url(
+                                    url, version
+                                )
                                 if versioned_url:
-                                    logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
+                                    logger.info(f"Maven license_files 统一为带版本注册表链接: {versioned_url}")
                                     result["license_files"] = versioned_url
                     else:
                         result = await process_github_repository(api, url, version, name=name)

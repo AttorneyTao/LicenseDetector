@@ -19,6 +19,12 @@ from core.maven_utils import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_maven_copyright_llm(monkeypatch):
+    # These routing tests exercise POM/license lookup without live model calls.
+    monkeypatch.setattr("core.utils.extract_copyright_info", lambda content: None)
+
+
 class TestExtractModulePath:
     def test_pkggo_url_with_protocol(self):
         assert extract_module_path("https://pkg.go.dev/go.uber.org/atomic") == "go.uber.org/atomic"
@@ -332,7 +338,7 @@ class TestGenericMavenRepositoryUrl:
         assert result is not None
         assert result["status"] == "success"
         assert result["license_type"] == "Apache-2.0"
-        assert result["license_files"] == "https://repo.example.test/demo-1.2.3.pom"
+        assert result["license_files"] == "https://mvnrepository.com/artifact/org.example/demo/1.2.3"
 
 
 class _ReachResp:
@@ -567,7 +573,7 @@ class TestMainDispatchGating:
                 "license_source": "maven_central",
             },
         )
-        assert result["license_files"] == pom_url
+        assert result["license_files"] == "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/1.7.36"
         assert result["license_type"] == "MIT"
 
     @pytest.mark.asyncio
@@ -579,13 +585,13 @@ class TestMainDispatchGating:
         assert result["license_files"] == "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/1.7.36"
 
     @pytest.mark.asyncio
-    async def test_maven_tag_matched_keeps_github_blob_url(self):
+    async def test_maven_tag_matched_uses_mvnrepository_url(self):
         blob = "https://github.com/qos-ch/slf4j/blob/v_1.7.36/LICENSE.txt"
         result = await self._run_row(
             {"github_url": "https://mvnrepository.com/artifact/org.slf4j/slf4j-api", "version": "1.7.36"},
             _github_result_fixture(False, blob),
         )
-        assert result["license_files"] == blob
+        assert result["license_files"] == "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/1.7.36"
 
     @pytest.mark.asyncio
     async def test_maven_no_tag_version_missing_in_central_keeps_github_link(self):
@@ -700,13 +706,13 @@ class TestCentralSonatypeSupport:
         )
 
     @pytest.mark.asyncio
-    async def test_versioned_license_url_roundtrips_to_sonatype(self):
+    async def test_versioned_license_url_normalizes_sonatype(self):
         with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)) as mock_check:
             url = await build_versioned_maven_license_url(
                 "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
             )
         assert url == (
-            "https://central.sonatype.com/artifact/"
+            "https://mvnrepository.com/artifact/"
             "com.alibaba.fastjson2/fastjson2-extension/2.0.40"
         )
         # 版本存在性校验走 repo1.maven.org 源站，而不是 sonatype 页面

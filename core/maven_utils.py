@@ -330,11 +330,10 @@ def _convert_maven_central_url_to_mvnrepository_format(url: str) -> Optional[str
 
 
 async def build_versioned_maven_license_url(url: str, version: Optional[str] = None) -> Optional[str]:
-    """构造带版本号的 Maven 组件链接，供 GitHub 无对应版本 tag 时回退使用。
+    """校验 Maven 版本并构造统一的 mvnrepository.com 组件链接。
 
-    版本存在性通过 repo1.maven.org（Maven Central 源站，对脚本友好）校验；
-    mvnrepository.com 本身有 Cloudflare 反爬，不直接对其发请求，但对外仍输出
-    mvnrepository.com 形式的链接以保持与既有 Maven 回退链接一致。
+    版本存在性通过原始仓库校验；展示页输入通过 Maven Central 源站校验。
+    mvnrepository.com 本身有 Cloudflare 反爬，不直接对其发请求。
 
     Parameters
     ----------
@@ -347,7 +346,7 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
     Returns
     -------
     str or None
-        校验通过的带版本链接；解析失败、无版本号或该版本在 Maven Central
+        校验通过的带版本链接；解析失败、无版本号或该版本在所用仓库
         不存在时返回 None。
     """
     logger = logging.getLogger("maven_utils.versioned_url")
@@ -364,7 +363,6 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
 
     parsed_host = urlparse(url).netloc.lower()
     is_page_site = is_maven_artifact_page_host(parsed_host)
-    is_sonatype = "central.sonatype.com" in parsed_host
     if is_page_site:
         check_base = _DEFAULT_MAVEN_CENTRAL_BASE
     else:
@@ -379,15 +377,7 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
         logger.info(f"Maven repository has no version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
         return None
 
-    if is_sonatype:
-        # 输出与输入同站点的链接，保持生态一致
-        return f"https://central.sonatype.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
-    if is_page_site or parsed_host in {"repo1.maven.org", "repo.maven.apache.org"}:
-        return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
-    return _join_repository_url(
-        location.repository_base_url,
-        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/{resolved_version}/",
-    )
+    return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
 
 
 def _http_get(url: str) -> Tuple[Optional[str], Optional[int]]:
@@ -595,9 +585,8 @@ def _extract_license_from_pom(pom_xml: str) -> Tuple[List[Dict], Optional[str], 
     Returns a tuple ``(licenses_list, license_url, copyright)``.  Each
     element may be ``None`` if it is not present in the POM.  When
     multiple licences are declared only the first one is returned to
-    simplify downstream processing.  Copyright strings are extracted
-    heuristically by scanning for any line containing the word
-    ``copyright`` (case–insensitive).
+    simplify downstream processing. Copyright notices use the shared LLM
+    extraction routine.
     """
     logger = logging.getLogger("maven_utils.pom")
     try:
@@ -621,15 +610,7 @@ def _extract_license_from_pom(pom_xml: str) -> Tuple[List[Dict], Optional[str], 
                     "url": url_text.strip() if url_text else None
                 })
 
-    # copyright extraction: search in description or other top level text
-    copyright_notice: Optional[str] = None
-    # Flatten the entire XML to a string without tags to search for
-    # copyright mentions.  While not perfect this method is
-    # reasonably robust.
-    text_content = ET.tostring(root, encoding="unicode", method="text")
-    match = re.search(r"copyright[^\n]*", text_content, re.IGNORECASE)
-    if match:
-        copyright_notice = match.group(0).strip()
+    copyright_notice = _extract_pom_copyright(pom_xml)
 
     logger.debug(f"Extracted from POM - licenses: {licenses_list}, copyright_notice: {copyright_notice}")
     return licenses_list, None, copyright_notice
@@ -725,9 +706,8 @@ def fetch_license_from_maven_repository(
         )
         logger.debug(f"Extracted licenses: {licenses_list}, copyright: {cp}")
         
-        # 构造copyright notice，优先使用从POM中提取的copyright
-        copyright_notice = cp if cp else _construct_copyright_notice(gav.group_id, None)
-        logger.debug(f"Constructed copyright notice: {copyright_notice}")
+        # 无原文版权声明时保持空值，由最终输出的统一规则填充。
+        copyright_notice = cp
         
         # 检查licenses_list是否包含实际的license信息
         if licenses_list and len(licenses_list) > 0 and (licenses_list[0]["name"] or licenses_list[0]["url"]):
@@ -810,12 +790,7 @@ def _extract_license_from_pom_recursive(
                     "url": url_text.strip() if url_text else None
                 })
 
-    # copyright extraction
-    copyright_notice: Optional[str] = None
-    text_content = ET.tostring(root, encoding="unicode", method="text")
-    match = re.search(r"copyright[^\n]*", text_content, re.IGNORECASE)
-    if match:
-        copyright_notice = match.group(0).strip()
+    copyright_notice = _extract_pom_copyright(pom_xml)
 
     logger.debug(f"Current POM {gav.group_id}:{gav.artifact_id}:{gav.version} - Licenses found: {len(licenses_list)}, Copyright: {copyright_notice}")
 
@@ -974,32 +949,40 @@ def _convert_licenses_to_spdx(licenses_list: List[Dict]) -> Optional[str]:
     return None
 
 
-def _construct_copyright_notice(group_id: str, existing_copyright: Optional[str]) -> str:
-    """
-    构造copyright notice。
-    """
-    if existing_copyright:
-        return existing_copyright
-        
-    # 从group_id提取组织名
-    org_name = group_id
-    if '.' in group_id:
-        # 对于org.slf4j这样的group_id，我们想要提取"Slf4j"作为组织名
-        parts = group_id.split('.')
-        if len(parts) >= 2:
-            # 取第二部分作为组织名，如slf4j -> Slf4j
-            org_name = parts[1]
-        else:
-            # 如果只有一部分，就用第一部分
-            org_name = parts[0]
-    
-    # 首字母大写
-    org_name = org_name.capitalize()
-    
-    from datetime import datetime
-    current_year = datetime.now().year
-    
-    return f"Copyright (c) {current_year} {org_name}"
+def _extract_pom_copyright(pom_xml: str) -> Optional[str]:
+    """Use the existing LLM extractor on POM metadata, excluding build templates."""
+    logger = logging.getLogger("maven_utils.copyright")
+    try:
+        # Preserve real notices in XML comments; plugin configuration is not
+        # package copyright evidence (e.g. Javadoc's templated <bottom> text).
+        from io import StringIO
+
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        events = ET.iterparse(StringIO(pom_xml), events=("start", "end", "comment"), parser=parser)
+        depth = 0
+        outer_comments = []
+        for event, node in events:
+            if event == "start":
+                depth += 1
+            elif event == "end":
+                depth -= 1
+            elif depth == 0:
+                # POM copyright headers often precede <project>.
+                outer_comments.append(ET.tostring(node, encoding="unicode"))
+        root = events.root
+        for parent in root.iter():
+            for child in list(parent):
+                if isinstance(child.tag, str) and child.tag.rsplit("}", 1)[-1] in {"build", "reporting"}:
+                    parent.remove(child)
+        from core.utils import extract_copyright_info
+
+        content = "\n".join([*outer_comments, ET.tostring(root, encoding="unicode")])
+        notice = extract_copyright_info(content)
+        if isinstance(notice, str) and notice.strip().lower() not in {"", "none", "null"}:
+            return notice.strip()
+    except Exception as exc:
+        logger.warning("POM copyright extraction failed: %s", exc)
+    return None
 
 
 def _fallback_extract_license_from_html(url: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1131,6 +1114,17 @@ def build_maven_repository_result(
     license_expression = analysis.get("license")
     if not license_expression:
         return None
+    group_id = analysis.get("group_id")
+    artifact_id = analysis.get("artifact_id")
+    resolved_version = analysis.get("version") or input_version
+    if not (group_id and artifact_id):
+        # Compatibility for callers that supply a partial analysis dictionary.
+        gav = parse_maven_repository_location(input_url, resolved_version).gav
+        group_id, artifact_id = gav.group_id, gav.artifact_id
+        resolved_version = resolved_version or gav.version
+    license_page = f"https://mvnrepository.com/artifact/{group_id}/{artifact_id}"
+    if resolved_version:
+        license_page += f"/{resolved_version}"
     return {
         "input_url": input_url,
         "repo_url": None,
@@ -1138,7 +1132,7 @@ def build_maven_repository_result(
         "resolved_version": analysis.get("version"),
         "used_default_branch": False,
         "component_name": name or analysis.get("artifact_id"),
-        "license_files": analysis.get("pom_url") or analysis.get("license_url") or input_url,
+        "license_files": license_page,
         "license_analysis": {
             "license_determination_reason": "Fetched from Maven repository POM",
             "license_source": analysis.get("license_source"),

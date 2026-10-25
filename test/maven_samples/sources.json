@@ -1,0 +1,31 @@
+{
+  "retrieved": "2026-10-25",
+  "purpose": "Original POM evidence for Maven copyright and output-link regressions",
+  "files": [
+    {
+      "file": "media3-common-1.0.0.pom",
+      "url": "https://dl.google.com/dl/android/maven2/androidx/media3/media3-common/1.0.0/media3-common-1.0.0.pom",
+      "download_sha256": "49cf1d4b89496bde6459ee9d67b096062d06d0266b9ba5508e594a798637f562",
+      "fixture_sha256": "49cf1d4b89496bde6459ee9d67b096062d06d0266b9ba5508e594a798637f562"
+    },
+    {
+      "file": "slf4j-api-2.0.16.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.pom",
+      "download_sha256": "b1a00f5b1c4dbe62b805d65d23911a6f77063889d7cb1e86fe8389d6190473f7",
+      "fixture_sha256": "f305f2ae46836f2a0b844c21323848ebd59f7335e40d6e0dfc7cb67e36ba4e32"
+    },
+    {
+      "file": "slf4j-parent-2.0.16.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-parent/2.0.16/slf4j-parent-2.0.16.pom",
+      "download_sha256": "09a0b4cc814d7274616c9b16d4c0fd9aaf1ecc813334de5131e547271b1982e5",
+      "fixture_sha256": "623120b20a82d79e8700a829b7b428de1ce0112a7e77bff23abf2dcae4145c6b"
+    },
+    {
+      "file": "slf4j-bom-2.0.16.pom",
+      "url": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-bom/2.0.16/slf4j-bom-2.0.16.pom",
+      "download_sha256": "0566048ec825cdf28758620af64d9e14ae38a9cd8748dd6fafa6df4a4194c279",
+      "fixture_sha256": "562e70d5df423565abce20ac87fd9ddc0e0c49f8f28bc1ac5543e0f3d17ae866"
+    }
+  ],
+  "fixture_note": "Git stores these text fixtures with LF line endings; download hashes preserve the original HTTP response bytes."
+}

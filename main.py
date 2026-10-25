@@ -306,10 +306,12 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                     version,
                                     name=name,
                                 )
-                                if result.get("status") == "success" and result.get("used_default_branch"):
-                                    versioned_url = await build_versioned_maven_license_url(url, version)
+                                if result.get("status") == "success":
+                                    versioned_url = await build_versioned_maven_license_url(
+                                        url, version
+                                    )
                                     if versioned_url:
-                                        logger.info(f"GitHub 无匹配版本 tag，license_files 改用带版本注册表链接: {versioned_url}")
+                                        logger.info(f"Maven license_files 统一为带版本注册表链接: {versioned_url}")
                                         result["license_files"] = versioned_url
                         else:
                             # 非 Maven URL，直接走原来的 GitHub 流程
