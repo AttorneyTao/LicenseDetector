@@ -742,7 +742,8 @@ async def construct_copyright_notice_async(year: str, owner: str, repo: str, ref
         except Exception as e:
             llm_logger.error(f"Error using LLM for copyright analysis: {str(e)}", exc_info=True)
     if not copyright_notice:
-        copyright_notice = f"Copyright (c) {year} {component_name} original author and authors"
+        year_prefix = f"{year} " if year else ""
+        copyright_notice = f"Copyright (c) {year_prefix}{component_name} original author and authors"
         llm_logger.info(f"Constructed default copyright notice: {copyright_notice}")
     return copyright_notice
 

@@ -4,7 +4,7 @@ import json
 import logging
 import requests
 from urllib.parse import urlparse
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 from .config import LLM_CONFIG
@@ -644,17 +644,17 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     else:
         last_modified_iso = None  # 单版本端点不包含发布时间
     logger.debug("Last modified ISO: %s", last_modified_iso)
+    copyright_year = ""
     if last_modified_iso:
         try:
-            dt = datetime.fromisoformat(last_modified_iso.replace("Z", "+00:00"))
+            copyright_year = str(datetime.fromisoformat(last_modified_iso.replace("Z", "+00:00")).year)
         except Exception:
             logger.warning(
-                "Failed to parse last_modified_iso: %s, using now()",
+                "Failed to parse last_modified_iso: %s, omitting fallback copyright year",
                 last_modified_iso,
             )
-            dt = datetime.now(timezone.utc)
     else:
-        dt = datetime.now(timezone.utc)
+        logger.debug("No version publication date; omitting fallback copyright year")
 
     author_obj = version_obj.get("author") or {}
     if isinstance(author_obj, dict):
@@ -853,7 +853,7 @@ async def process_npm_repository(url: str, version: Optional[str] = None) -> Dic
     else:
         # 使用 LLM 从 README 和 npm tarball 中的 License 文件提取版权声明
         final_copyright_notice = await construct_copyright_notice_async(
-            year=str(dt.year),
+            year=copyright_year,
             owner="",
             repo=pkg_name,
             ref=resolved_version,
