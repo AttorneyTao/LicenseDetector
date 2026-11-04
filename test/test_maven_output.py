@@ -24,9 +24,14 @@ def llm(monkeypatch):
 
 @pytest.fixture
 def pom_http(monkeypatch):
+    sources = json.loads((FIXTURES / "sources.json").read_text())["files"]
+    responses = {
+        source["url"]: ((FIXTURES / source["file"]).read_text(), 200)
+        for source in sources
+    }
+
     def fetch(url):
-        path = FIXTURES / url.rsplit("/", 1)[-1]
-        return (path.read_text(), 200) if path.exists() else (None, 404)
+        return responses.get(url, (None, 404))
 
     mock = Mock(side_effect=fetch)
     monkeypatch.setattr(maven, "_http_get", mock)
@@ -117,11 +122,16 @@ def test_legacy_pom_parser_uses_llm_instead_of_first_copyright_line(llm):
 ])
 @pytest.mark.asyncio
 async def test_all_repository_hosts_normalize_to_mvnrepository(monkeypatch, url):
-    reachable = AsyncMock(return_value=True)
+    location = maven.parse_maven_repository_location(url)
+    pom = "<project><groupId>org.example</groupId><artifactId>demo</artifactId><version>1.2.3</version></project>"
+    fetch = Mock(side_effect=lambda requested: (pom, 200) if requested == location.pom_url else (None, 404))
+    monkeypatch.setattr(maven, "_http_get", fetch)
+    reachable = AsyncMock(side_effect=AssertionError("Directory reachability is not version evidence"))
     monkeypatch.setattr(utils, "is_url_reachable", reachable)
     expected = "https://mvnrepository.com/artifact/org.example/demo/1.2.3"
     assert await maven.build_versioned_maven_license_url(url) == expected
-    location = maven.parse_maven_repository_location(url)
+    fetch.assert_called_once_with(location.pom_url)
+    reachable.assert_not_awaited()
     analysis = {"group_id": "org.example", "artifact_id": "demo", "version": "1.2.3", "license": "MIT", "pom_url": location.pom_url}
     assert maven.build_maven_repository_result(analysis, url)["license_files"] == expected
 
@@ -135,7 +145,7 @@ async def test_cli_and_api_output_preserve_purl_and_metadata(monkeypatch, llm, p
 
     monkeypatch.chdir(tmp_path)
     module = main if entry == "cli" else api
-    # purl resolves to Maven Central; the exact POM response is supplied locally.
+    # Google-only POMs must remain on Google when entering through a Maven purl.
     input_url = MEDIA3_URL if input_kind == "url" else "pkg:maven/androidx.media3/media3-common@1.0.0"
     df = pd.DataFrame([{"github_url": input_url, "version": "1.0.0", "name": "androidx.media3:media3-common", "package_manager": "maven", "serial_number": "00027"}])
     github = AsyncMock(side_effect=AssertionError("POM succeeded; GitHub must not run"))
@@ -154,14 +164,14 @@ async def test_cli_and_api_output_preserve_purl_and_metadata(monkeypatch, llm, p
 @pytest.mark.parametrize("entry", ["cli", "api"])
 @pytest.mark.parametrize("default_branch", [True, False])
 @pytest.mark.asyncio
-async def test_maven_github_fallback_also_normalizes_link(monkeypatch, tmp_path, entry, default_branch):
+async def test_maven_github_fallback_also_normalizes_link(monkeypatch, tmp_path, pom_http, entry, default_branch):
     import main
     import api
 
     monkeypatch.chdir(tmp_path)
     module = main if entry == "cli" else api
     monkeypatch.setattr(module, "analyze_maven_repository_url", lambda *args: {"license": None})
-    monkeypatch.setattr(utils, "is_url_reachable", AsyncMock(return_value=True))
+    monkeypatch.setattr(utils, "is_url_reachable", AsyncMock(side_effect=AssertionError("Do not probe version directories")))
     github_result = {
         "status": "success", "license_type": "Apache-2.0",
         "license_file_license": "Apache-2.0", "used_default_branch": default_branch,

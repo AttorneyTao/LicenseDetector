@@ -38,6 +38,7 @@ itself.
 from __future__ import annotations
 
 import os
+import asyncio
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -99,6 +100,7 @@ class MavenRepositoryLocation:
 
 
 _DEFAULT_MAVEN_CENTRAL_BASE = "https://repo1.maven.org/maven2"
+_GOOGLE_MAVEN_BASE = "https://dl.google.com/dl/android/maven2"
 _MAVEN_FILE_SUFFIXES = {
     ".pom", ".jar", ".war", ".ear", ".zip", ".aar", ".module",
     ".xml", ".sha1", ".sha256", ".sha512", ".md5", ".asc",
@@ -132,7 +134,7 @@ def is_maven_artifact_page_host(netloc: str) -> bool:
 
     mvnrepository.com 与 central.sonatype.com（Maven Central 官方前端）
     共用 ``/artifact/<group>/<artifact>[/<version>]`` 路径语法；两者都是
-    展示页而非仓库源站，解析后实际 POM 请求一律走 Maven Central 源站。
+    展示页而非仓库源站，实际 POM 来源按组件坐标选择。
     """
     host = (netloc or "").lower()
     return "mvnrepository.com" in host or "central.sonatype.com" in host
@@ -151,31 +153,34 @@ def parse_maven_repository_location(
     ``/repository/maven/<repo>/`` layout, or an explicitly configured root.
     Artifact page sites (mvnrepository.com, central.sonatype.com) are parsed
     from their ``/artifact/<group>/<artifact>[/<version>]`` pages and resolved
-    against Maven Central's origin (repo1.maven.org).
+    against Google Maven for AndroidX, or Maven Central for other groups.
     """
 
     if not isinstance(url, str) or not url.strip():
         raise MavenURLParseError("Maven URL is empty")
 
+    # Empty Excel cells arrive as NaN; they must not override the URL version.
+    from core.utils import is_blank_value
+    from pandas import NA
+    version = None if version is NA or is_blank_value(version) else str(version).strip()
     url = url.strip()
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise MavenURLParseError(f"Unsupported Maven URL: {url}")
 
     if is_maven_artifact_page_host(parsed.netloc):
-        # mvnrepository.com / central.sonatype.com：展示页，不是仓库源站。
-        # 解析出 GAV 后 POM 请求一律走 Maven Central 源站（repo1.maven.org）。
         gav = parse_mvnrepository_url(url)
         resolved_version = version or gav.version
         gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
+        base = _GOOGLE_MAVEN_BASE if gav.group_id.startswith("androidx.") else _DEFAULT_MAVEN_CENTRAL_BASE
         if not resolved_version:
             pom_url = ""
         else:
             pom_url = _join_repository_url(
-                _DEFAULT_MAVEN_CENTRAL_BASE,
+                base,
                 f"{gav.as_path()}/{gav.artifact_id}-{resolved_version}.pom",
             )
-        return MavenRepositoryLocation(gav, _DEFAULT_MAVEN_CENTRAL_BASE, pom_url)
+        return MavenRepositoryLocation(gav, base, pom_url)
 
     path = unquote(parsed.path).strip("/")
     parts = [part for part in path.split("/") if part]
@@ -193,7 +198,9 @@ def parse_maven_repository_location(
             break
 
     if group_start is None:
-        if "maven2" in parts:
+        if parsed.hostname == "maven.google.com":
+            group_start = 0
+        elif "maven2" in parts:
             marker = parts.index("maven2")
             group_start = marker + 1
         else:
@@ -240,7 +247,8 @@ def parse_maven_repository_location(
             repository_base_url += f"/{base_path}"
 
     gav = GAV(".".join(group_parts), artifact_id, resolved_version)
-    if is_file_url and parts[-1].lower().endswith(".pom"):
+    if (is_file_url and parts[-1].lower().endswith(".pom")
+            and resolved_version == parts[version_index]):
         pom_url = url.split("?", 1)[0].split("#", 1)[0]
     else:
         pom_url = _join_repository_url(
@@ -248,6 +256,15 @@ def parse_maven_repository_location(
             f"{gav.as_path()}/{artifact_id}-{resolved_version}.pom",
         )
     return MavenRepositoryLocation(gav, repository_base_url, pom_url)
+
+
+def _maven_repository_bases(location: MavenRepositoryLocation) -> List[str]:
+    """Keep the input repository first, then the applicable public sources."""
+    bases = [location.repository_base_url]
+    if location.gav.group_id.startswith("androidx."):
+        bases.append(_GOOGLE_MAVEN_BASE)
+    bases.append(_DEFAULT_MAVEN_CENTRAL_BASE)
+    return list(dict.fromkeys(bases))
 
 
 def is_maven_repository_url(url: str, version: Optional[str] = None) -> bool:
@@ -329,10 +346,14 @@ def _convert_maven_central_url_to_mvnrepository_format(url: str) -> Optional[str
     return mvn_url
 
 
-async def build_versioned_maven_license_url(url: str, version: Optional[str] = None) -> Optional[str]:
+async def build_versioned_maven_license_url(
+    url: str,
+    version: Optional[str] = None,
+    analysis: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """校验 Maven 版本并构造统一的 mvnrepository.com 组件链接。
 
-    版本存在性通过原始仓库校验；展示页输入通过 Maven Central 源站校验。
+    复用本轮已核实的 POM；否则从支持的源站获取并校验具体 POM 的坐标。
     mvnrepository.com 本身有 Cloudflare 反爬，不直接对其发请求。
 
     Parameters
@@ -357,24 +378,27 @@ async def build_versioned_maven_license_url(url: str, version: Optional[str] = N
         logger.debug(f"Cannot parse Maven URL {url}: {exc}")
         return None
 
-    resolved_version = version or gav.version
+    resolved_version = gav.version
+    if not resolved_version and analysis and analysis.get("version_verified"):
+        resolved_version = analysis.get("version")
     if not resolved_version:
         return None
-
-    parsed_host = urlparse(url).netloc.lower()
-    is_page_site = is_maven_artifact_page_host(parsed_host)
-    if is_page_site:
-        check_base = _DEFAULT_MAVEN_CENTRAL_BASE
-    else:
-        check_base = location.repository_base_url
-    check_url = _join_repository_url(
-        check_base,
-        f"{gav.group_id.replace('.', '/')}/{gav.artifact_id}/{resolved_version}/",
+    gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
+    same_coordinates = bool(
+        analysis and (analysis.get("group_id"), analysis.get("artifact_id"), analysis.get("version"))
+        == (gav.group_id, gav.artifact_id, gav.version)
     )
-    from core.utils import is_url_reachable
-
-    if not await is_url_reachable(check_url):
-        logger.info(f"Maven repository has no version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
+    confirmed = same_coordinates and analysis.get("version_verified") is True
+    already_checked = same_coordinates and analysis.get("version_verified") is False
+    if not confirmed and not already_checked:
+        for base in _maven_repository_bases(location):
+            pom_url = location.pom_url if base == location.repository_base_url else None
+            evidence = await asyncio.to_thread(_fetch_verified_pom, gav, base, pom_url)
+            if evidence:
+                confirmed = True
+                break
+    if not confirmed:
+        logger.info(f"Could not verify Maven version {resolved_version} for {gav.group_id}:{gav.artifact_id}")
         return None
 
     return f"https://mvnrepository.com/artifact/{gav.group_id}/{gav.artifact_id}/{resolved_version}"
@@ -658,6 +682,148 @@ def _snapshot_pom_url(
     return None
 
 
+def _pom_coordinate_values(pom_xml, inherited_properties=None):
+    """Read coordinates and interpolation values without changing POM contents."""
+    try:
+        root = ET.fromstring(pom_xml)
+    except ET.ParseError:
+        return None
+    if root.tag not in {"project", "{http://maven.apache.org/POM/4.0.0}project"}:
+        return None
+    ns = "{http://maven.apache.org/POM/4.0.0}" if root.tag.startswith("{") else ""
+    parent = root.find(f"{ns}parent")
+    properties = dict(inherited_properties or {})
+    property_node = root.find(f"{ns}properties")
+    if property_node is not None:
+        properties.update({child.tag.removeprefix(ns): (child.text or "").strip()
+                           for child in property_node})
+    values = dict(properties)
+    coordinates = {}
+    for key in ("groupId", "artifactId", "version"):
+        value = root.findtext(f"{ns}{key}")
+        if not value and key != "artifactId" and parent is not None:
+            value = parent.findtext(f"{ns}{key}")
+        coordinates[key] = (value or "").strip()
+        values[f"project.{key}"] = coordinates[key]
+        values[f"pom.{key}"] = coordinates[key]
+        if parent is not None:
+            values[f"project.parent.{key}"] = (parent.findtext(f"{ns}{key}") or "").strip()
+    parent_coordinates = None if parent is None else tuple(
+        (parent.findtext(f"{ns}{key}") or "").strip()
+        for key in ("groupId", "artifactId", "version")
+    )
+    return properties, coordinates, values, parent_coordinates
+
+
+def _expand_pom_value(value, values):
+    for _ in range(10):
+        updated = re.sub(r"\$\{([^}]+)\}", lambda m: values.get(m[1], m[0]), value)
+        if updated == value:
+            break
+        value = updated
+    return value
+
+
+def _pom_matches_gav(pom_xml: str, gav: GAV, inherited_properties=None) -> bool:
+    """Verify coordinates using local and, when available, verified parent values."""
+    model = _pom_coordinate_values(pom_xml, inherited_properties)
+    if model is None:
+        return False
+    _, coordinates, values, _ = model
+    return tuple(_expand_pom_value(coordinates[key], values)
+                 for key in ("groupId", "artifactId", "version")) == (
+        gav.group_id, gav.artifact_id, gav.version,
+    )
+
+
+def _verified_pom_properties(pom_xml, gav, repository_base_url, cache, seen, depth=5,
+                             needed=(), descendant_values=None):
+    """Resolve only properties needed to verify coordinates, with bounded parents."""
+    model = _pom_coordinate_values(pom_xml)
+    if model is None:
+        return None
+    properties, coordinates, values, parent_coordinates = model
+    resolved = tuple(_expand_pom_value(coordinates[key], values)
+                     for key in ("groupId", "artifactId", "version"))
+    expected = (gav.group_id, gav.artifact_id, gav.version)
+    if any("${" not in value and value != target for value, target in zip(resolved, expected)):
+        return None  # Parent properties cannot repair an explicit coordinate mismatch.
+    # Inherited expressions can refer to a child's properties. Parent GAV
+    # verification still uses the parent's own context above.
+    descendant_context = {**values, **(descendant_values or {})}
+    pending = list(resolved) + [
+        _expand_pom_value(descendant_context.get(key, "${" + key + "}"), descendant_context)
+        for key in needed
+    ]
+    missing = {key for value in pending for key in re.findall(r"\$\{([^}]+)\}", value)}
+    if not missing:
+        return properties
+    if depth <= 0 or parent_coordinates is None:
+        return None
+    parent_coordinates = tuple(_expand_pom_value(value, values) for value in parent_coordinates)
+    if any(not value or "${" in value for value in parent_coordinates) or parent_coordinates in seen:
+        return None
+    parent_gav = GAV(*parent_coordinates)
+    # Match the existing parent-license lookup: input source, then Central.
+    for base in dict.fromkeys((repository_base_url, _DEFAULT_MAVEN_CENTRAL_BASE)):
+        parent_url = _join_repository_url(
+            base, f"{parent_gav.as_path()}/{parent_gav.artifact_id}-{parent_gav.version}.pom",
+        )
+        if parent_url not in cache:
+            cache[parent_url] = _http_get(parent_url)
+        parent_text, status = cache[parent_url]
+        if not (status and 200 <= status < 300 and parent_text):
+            continue
+        inherited = _verified_pom_properties(
+            parent_text, parent_gav, base, cache, seen | {parent_coordinates}, depth - 1, missing,
+            descendant_context,
+        )
+        if inherited is None:
+            continue
+        model = _pom_coordinate_values(pom_xml, inherited)
+        properties, _, values, _ = model
+        descendant_context = {**values, **(descendant_values or {})}
+        if (_pom_matches_gav(pom_xml, gav, inherited)
+                and all("${" not in _expand_pom_value(
+                    descendant_context.get(key, "${" + key + "}"), descendant_context)
+                        for key in needed)):
+            return properties
+    return None
+
+
+def _fetch_verified_pom(
+    gav: GAV,
+    repository_base_url: str,
+    pom_url: Optional[str] = None,
+) -> Optional[Tuple[str, str]]:
+    """Fetch a concrete POM and accept it only when its GAV matches the request."""
+    logger = logging.getLogger("maven_utils.fetch")
+    if not gav.version:
+        return None
+    pom_url = pom_url or _join_repository_url(
+        repository_base_url, f"{gav.as_path()}/{gav.artifact_id}-{gav.version}.pom",
+    )
+    try:
+        cache = {}
+        seen = {(gav.group_id, gav.artifact_id, gav.version)}
+        pom_text, status = _http_get(pom_url)
+        cache[pom_url] = (pom_text, status)
+        if (status and 200 <= status < 300 and pom_text
+                and _verified_pom_properties(pom_text, gav, repository_base_url, cache, seen) is not None):
+            return pom_text, pom_url
+        snapshot_url = _snapshot_pom_url(gav, repository_base_url)
+        if snapshot_url and snapshot_url != pom_url:
+            pom_text, status = _http_get(snapshot_url)
+            if (status and 200 <= status < 300 and pom_text
+                    and _verified_pom_properties(pom_text, gav, repository_base_url, cache, seen) is not None):
+                return pom_text, snapshot_url
+        logger.info("POM unavailable or coordinates unverified for %s:%s:%s (status=%s)",
+                    gav.group_id, gav.artifact_id, gav.version, status)
+    except Exception as exc:
+        logger.warning("POM verification failed for %s (%s)", pom_url, type(exc).__name__)
+    return None
+
+
 def fetch_license_from_maven_repository(
     gav: GAV,
     repository_base_url: str,
@@ -676,51 +842,24 @@ def fetch_license_from_maven_repository(
             return None, None, None
 
     gav = GAV(gav.group_id, gav.artifact_id, version)
-    group_path = gav.group_id.replace('.', '/')
-    pom_path = f"{group_path}/{gav.artifact_id}/{version}/{gav.artifact_id}-{version}.pom"
-    pom_url = pom_url or _join_repository_url(repository_base_url, pom_path)
-    logger.debug(f"Fetching POM from: {pom_url}")
-    pom_text, status = _http_get(pom_url)
-    if not (status and 200 <= status < 300 and pom_text):
-        timestamped_pom_url = _snapshot_pom_url(gav, repository_base_url)
-        if timestamped_pom_url:
-            logger.debug("Fetching timestamped snapshot POM from: %s", timestamped_pom_url)
-            pom_text, status = _http_get(timestamped_pom_url)
-            if status and 200 <= status < 300 and pom_text:
-                pom_url = timestamped_pom_url
-    logger.debug(f"POM download result - status: {status}, content length: {len(pom_text) if pom_text else 0}")
-    
-    if status and 200 <= status < 300 and pom_text:
-        # 检查是否是有效的XML内容
-        if pom_text.strip().startswith('<?xml') or '<project' in pom_text:
-            logger.debug("POM content appears to be valid XML")
-        else:
-            logger.warning("POM content does not appear to be valid XML")
-            logger.debug(f"First 500 characters of content: {pom_text[:500]}")
-            
-        # 递归查找license信息
-        licenses_list, _, cp = _extract_license_from_pom_recursive(
-            pom_text,
-            gav,
-            repository_base_url=repository_base_url,
+    evidence = _fetch_verified_pom(gav, repository_base_url, pom_url)
+    if evidence is None:
+        return None, None, None
+    return _analyze_verified_pom(gav, repository_base_url, *evidence)
+
+
+def _analyze_verified_pom(gav, repository_base_url, pom_text, pom_url):
+    """Reuse the existing license and LLM copyright extraction on verified bytes."""
+    licenses, _, copyright_notice = _extract_license_from_pom_recursive(
+        pom_text, gav, repository_base_url=repository_base_url,
+    )
+    if licenses and (licenses[0]["name"] or licenses[0]["url"]):
+        spdx_expression = _convert_licenses_to_spdx(licenses)
+        logging.getLogger("maven_utils.fetch").info(
+            "POM license for %s:%s:%s -> %s", gav.group_id, gav.artifact_id, gav.version, spdx_expression,
         )
-        logger.debug(f"Extracted licenses: {licenses_list}, copyright: {cp}")
-        
-        # 无原文版权声明时保持空值，由最终输出的统一规则填充。
-        copyright_notice = cp
-        
-        # 检查licenses_list是否包含实际的license信息
-        if licenses_list and len(licenses_list) > 0 and (licenses_list[0]["name"] or licenses_list[0]["url"]):
-            # 使用大模型将license信息转换为SPDX expression
-            spdx_expression = _convert_licenses_to_spdx(licenses_list)
-            logger.info(f"POM license for {gav.group_id}:{gav.artifact_id}:{version} -> {spdx_expression}")
-            return spdx_expression, pom_url, copyright_notice
-        else:
-            # 即使没有找到license，也要返回copyright信息
-            logger.info(f"No licenses found for {gav.group_id}:{gav.artifact_id}:{version}, but returning copyright notice: {copyright_notice}")
-            return None, None, copyright_notice
-    logger.info(f"POM not available or failed for {gav.group_id}:{gav.artifact_id}:{version} (status={status})")
-    return None, None, None
+        return spdx_expression, pom_url, copyright_notice
+    return None, None, copyright_notice
 
 
 def fetch_license_from_maven_central(gav: GAV) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -1011,8 +1150,8 @@ def analyze_maven_repository_url(
 
     1. Parse the URL to obtain the GAV and originating repository root.
     2. Download the POM from that same repository (including snapshot POMs).
-    3. For private repositories only, try Maven Central if the private POM does
-       not provide a license.
+    3. Try Google Maven for AndroidX and the existing Central fallback when
+       the originating POM does not provide a license.
 
     Parameters
     ----------
@@ -1038,60 +1177,42 @@ def analyze_maven_repository_url(
     
     location = parse_maven_repository_location(url, version)
     gav = location.gav
-    if not gav.version:
-        resolved_version = resolve_latest_version(gav, location.repository_base_url)
-        if resolved_version:
-            gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
-            location = MavenRepositoryLocation(
-                gav,
-                location.repository_base_url,
-                _join_repository_url(
-                    location.repository_base_url,
-                    f"{gav.as_path()}/{gav.artifact_id}-{resolved_version}.pom",
-                ),
-            )
-
     result: Dict[str, Any] = {
         "group_id": gav.group_id,
         "artifact_id": gav.artifact_id,
         "repository_base_url": location.repository_base_url,
+        "license_source": None,
+        "version_verified": False,
     }
     if gav.version:
         result["version"] = gav.version
-
-    lic_name, lic_url, cp_notice = fetch_license_from_maven_repository(
-        gav,
-        location.repository_base_url,
-        location.pom_url or None,
-    )
-    source = "maven_repository_pom"
-    central_hosts = {"repo1.maven.org", "repo.maven.apache.org"}
-    if urlparse(location.repository_base_url).netloc.lower() in central_hosts:
-        source = "maven_central"
-
-    if not lic_name and location.repository_base_url.rstrip("/") != _DEFAULT_MAVEN_CENTRAL_BASE:
-        central_license, central_url, central_copyright = fetch_license_from_maven_central(gav)
-        if central_license:
-            lic_name, lic_url, cp_notice = central_license, central_url, central_copyright
-            source = "maven_central"
-
-    if lic_name:
-        result["license"] = lic_name
-        result["license_url"] = lic_url
-        result["pom_url"] = lic_url
-        result["license_source"] = source
-    else:
-        if lic_url:
+    for base in _maven_repository_bases(location):
+        if not gav.version:
+            resolved_version = resolve_latest_version(gav, base)
+            if not resolved_version:
+                continue
+            gav = GAV(gav.group_id, gav.artifact_id, resolved_version)
+            result["version"] = resolved_version
+        pom_url = location.pom_url if base == location.repository_base_url else None
+        evidence = _fetch_verified_pom(gav, base, pom_url)
+        if evidence is None:
+            continue
+        pom_text, verified_url = evidence
+        lic_name, lic_url, cp_notice = _analyze_verified_pom(gav, base, pom_text, verified_url)
+        if lic_name or not result["version_verified"]:
+            # Preserve the first verified version even if license extraction fails.
+            result.update(repository_base_url=base, pom_url=verified_url, version_verified=True)
+            result.pop("copyright", None)
+            if cp_notice:
+                result["copyright"] = cp_notice
+        if lic_name:
+            result["license"] = lic_name
             result["license_url"] = lic_url
-        if cp_notice:
-            result["copyright"] = cp_notice
-
-    if cp_notice:
-        result["copyright"] = cp_notice
-
-    # ensure license_source exists (None if not found)
-    if "license_source" not in result:
-        result["license_source"] = None
+            result["license_source"] = (
+                "maven_central" if urlparse(base).hostname in {"repo1.maven.org", "repo.maven.apache.org"}
+                else "maven_repository_pom"
+            )
+            break
 
     logger.info(f"analyze_maven_repository_url result for {url}: {result}")
 

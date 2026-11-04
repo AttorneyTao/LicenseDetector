@@ -287,6 +287,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         if is_maven_repository_url(url, version):
                             logger.info(f"检测到 Maven URL: {url}，优先分析原始仓库 POM")
                             result = None
+                            maven_analysis = None
                             try:
                                 maven_analysis = analyze_maven_repository_url(url, version)
                                 result = build_maven_repository_result(
@@ -308,7 +309,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                                 )
                                 if result.get("status") == "success":
                                     versioned_url = await build_versioned_maven_license_url(
-                                        url, version
+                                        url, version, analysis=maven_analysis
                                     )
                                     if versioned_url:
                                         logger.info(f"Maven license_files 统一为带版本注册表链接: {versioned_url}")

@@ -2,6 +2,7 @@
 """Tests for versioned registry link fallback when GitHub has no matching tag."""
 import os
 import sys
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -23,6 +24,24 @@ from core.maven_utils import (
 def mock_maven_copyright_llm(monkeypatch):
     # These routing tests exercise POM/license lookup without live model calls.
     monkeypatch.setattr("core.utils.extract_copyright_info", lambda content: None)
+
+
+def _pom_xml(group, artifact, version):
+    return (
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+        f'<groupId>{group}</groupId><artifactId>{artifact}</artifactId>'
+        f'<version>{version}</version></project>'
+    )
+
+
+@contextmanager
+def _mock_maven_pom(group, artifact, version, available=True):
+    """Serve one exact Central POM URL, rejecting directories and other hosts."""
+    url = (f"https://repo1.maven.org/maven2/{group.replace('.', '/')}/"
+           f"{artifact}/{version}/{artifact}-{version}.pom")
+    responses = {url: (_pom_xml(group, artifact, version), 200)} if available else {}
+    with patch("core.maven_utils._http_get", side_effect=lambda requested: responses.get(requested, (None, 404))) as fetch:
+        yield fetch
 
 
 class TestExtractModulePath:
@@ -108,19 +127,19 @@ class TestBuildVersionedPkggoLicenseUrl:
 class TestBuildVersionedMavenLicenseUrl:
     @pytest.mark.asyncio
     async def test_explicit_version_reachable(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)) as mock_check:
+        with _mock_maven_pom("org.slf4j", "slf4j-api", "1.7.36") as mock_check:
             url = await build_versioned_maven_license_url(
                 "https://mvnrepository.com/artifact/org.slf4j/slf4j-api", "1.7.36"
             )
         assert url == "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/1.7.36"
-        # 校验走的是 repo1.maven.org 源站，而不是 mvnrepository.com
-        mock_check.assert_awaited_once_with(
-            "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/1.7.36/"
+        # Confirm the concrete POM; directory-listing access is unnecessary.
+        mock_check.assert_called_once_with(
+            "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.pom"
         )
 
     @pytest.mark.asyncio
     async def test_version_from_url_path(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)):
+        with _mock_maven_pom("org.slf4j", "slf4j-api", "1.7.36"):
             url = await build_versioned_maven_license_url(
                 "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/1.7.36"
             )
@@ -128,7 +147,7 @@ class TestBuildVersionedMavenLicenseUrl:
 
     @pytest.mark.asyncio
     async def test_repo1_maven_central_url_converted(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)):
+        with _mock_maven_pom("org.slf4j", "slf4j-api", "1.7.36"):
             url = await build_versioned_maven_license_url(
                 "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar"
             )
@@ -143,7 +162,7 @@ class TestBuildVersionedMavenLicenseUrl:
 
     @pytest.mark.asyncio
     async def test_unreachable_version_returns_none(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=False)):
+        with _mock_maven_pom("org.slf4j", "slf4j-api", "0.0.0-nonexistent", available=False):
             url = await build_versioned_maven_license_url(
                 "https://mvnrepository.com/artifact/org.slf4j/slf4j-api", "0.0.0-nonexistent"
             )
@@ -191,25 +210,25 @@ class TestBuildVersionedPkggoLicenseUrlEdgeCases:
 class TestBuildVersionedMavenLicenseUrlEdgeCases:
     @pytest.mark.asyncio
     async def test_explicit_version_overrides_url_version(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)) as mock_check:
+        with _mock_maven_pom("org.slf4j", "slf4j-api", "2.0.0") as mock_check:
             url = await build_versioned_maven_license_url(
                 "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/1.0.0", "2.0.0"
             )
         assert url == "https://mvnrepository.com/artifact/org.slf4j/slf4j-api/2.0.0"
-        mock_check.assert_awaited_once_with(
-            "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.0/"
+        mock_check.assert_called_once_with(
+            "https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.0/slf4j-api-2.0.0.pom"
         )
 
     @pytest.mark.asyncio
     async def test_deep_group_id_path_conversion(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)) as mock_check:
+        with _mock_maven_pom("com.fasterxml.jackson.core", "jackson-databind", "2.15.2") as mock_check:
             url = await build_versioned_maven_license_url(
                 "https://mvnrepository.com/artifact/com.fasterxml.jackson.core/jackson-databind",
                 "2.15.2",
             )
         assert url == "https://mvnrepository.com/artifact/com.fasterxml.jackson.core/jackson-databind/2.15.2"
-        mock_check.assert_awaited_once_with(
-            "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.15.2/"
+        mock_check.assert_called_once_with(
+            "https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2.pom"
         )
 
     @pytest.mark.asyncio
@@ -554,6 +573,7 @@ class TestMainDispatchGating:
              patch("main.get_github_url_from_pkggo", new=AsyncMock(
                  return_value={"github_url": "https://github.com/uber-go/atomic"})), \
              patch("core.utils.is_url_reachable", new=AsyncMock(return_value=reachable)), \
+             _mock_maven_pom("org.slf4j", "slf4j-api", "1.7.36", available=reachable), \
              patch("core.go_utils.aiohttp.ClientSession", return_value=session):
             results = await process_all_repos(api=MagicMock(), df=df, max_concurrency=1)
         assert len(results) == 1
@@ -707,7 +727,7 @@ class TestCentralSonatypeSupport:
 
     @pytest.mark.asyncio
     async def test_versioned_license_url_normalizes_sonatype(self):
-        with patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)) as mock_check:
+        with _mock_maven_pom("com.alibaba.fastjson2", "fastjson2-extension", "2.0.40") as mock_check:
             url = await build_versioned_maven_license_url(
                 "https://central.sonatype.com/artifact/com.alibaba.fastjson2/fastjson2-extension/2.0.40"
             )
@@ -715,10 +735,10 @@ class TestCentralSonatypeSupport:
             "https://mvnrepository.com/artifact/"
             "com.alibaba.fastjson2/fastjson2-extension/2.0.40"
         )
-        # 版本存在性校验走 repo1.maven.org 源站，而不是 sonatype 页面
-        mock_check.assert_awaited_once_with(
+        # Confirm the concrete POM on the origin repository.
+        mock_check.assert_called_once_with(
             "https://repo1.maven.org/maven2/com/alibaba/fastjson2/"
-            "fastjson2-extension/2.0.40/"
+            "fastjson2-extension/2.0.40/fastjson2-extension-2.0.40.pom"
         )
 
     def test_analysis_fetches_pom_from_central_origin(self):

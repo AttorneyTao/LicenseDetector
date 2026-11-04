@@ -1113,6 +1113,7 @@ async def _process_repositories(api, df, log_queue=None):
                             except:
                                 pass
                         result = None
+                        maven_analysis = None
                         try:
                             maven_analysis = analyze_maven_repository_url(url, version)
                             result = build_maven_repository_result(
@@ -1134,7 +1135,7 @@ async def _process_repositories(api, df, log_queue=None):
                             result = await process_github_repository(api, url, version, name=name)
                             if result.get("status") == "success":
                                 versioned_url = await build_versioned_maven_license_url(
-                                    url, version
+                                    url, version, analysis=maven_analysis
                                 )
                                 if versioned_url:
                                     logger.info(f"Maven license_files 统一为带版本注册表链接: {versioned_url}")
