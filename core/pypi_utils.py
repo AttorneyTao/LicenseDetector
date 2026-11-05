@@ -12,8 +12,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib3.exceptions import InsecureRequestWarning
 from typing import List, Dict, Any, Optional
-from urllib.parse import urlparse
-from .utils import extract_copyright_info, extract_copyright_info_async  # 添加这行导入
+from urllib.parse import quote, unquote, urlparse
+from .utils import extract_copyright_info, extract_copyright_info_async, is_blank_value
 from .config import LLM_CONFIG, SCORE_THRESHOLD  # 修改导入
 
 # 日志设置
@@ -26,8 +26,8 @@ def _parse_package_name(url: str) -> str:
         parsed = urlparse(url)
         parts = [p for p in parsed.path.split('/') if p]
         if len(parts) >= 2 and parts[0] == "project":
-            return parts[1].strip('/')  # 移除尾部斜杠
-        return parts[0].strip('/') if parts else ""
+            return unquote(parts[1]).strip('/')
+        return unquote(parts[0]).strip('/') if parts else ""
     except Exception as e:
         logger.error(f"Failed to parse package name from URL {url}: {str(e)}")
         return ""
@@ -67,6 +67,11 @@ _REPO_URL_KEY_PRIORITY = (
     "源码", "源代码", "仓库", "项目主页", "主页",
 )
 
+_SOURCE_URL_KEYS = {
+    "source", "sourcecode", "source code", "repository", "repo", "code", "github",
+    "源码", "源代码", "仓库",
+}
+
 # project_urls 里需要降权的 key：通常不是仓库，但部分包（如 sqlalchemy）的
 # "Issue Tracker" 恰恰指向仓库根，因此不丢弃、只降到最低优先级——URL 形态校验
 # （是否为 github.com/owner/repo）比 key 名更可靠。
@@ -75,13 +80,6 @@ _DEPRECATED_URL_KEY_HINTS = (
     "bug", "bugs", "tracker", "wiki", "discussion", "documentation", "docs",
     "changelog", "change log", "release notes", "download", "downloads",
 )
-
-_GITHUB_URL_IN_TEXT_RE = re.compile(
-    r"https?://(?:www\.)?github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
-    r"(?:/[^\s\"'<>)\]]*)?",
-    re.IGNORECASE,
-)
-
 
 def _normalize_github_repo_url(raw: str) -> Optional[str]:
     """把任意形态的 GitHub 链接规范化为 https://github.com/owner/repo[/tree/...]。
@@ -135,12 +133,25 @@ def _extract_github_repo_url(info: Dict[str, Any]) -> Optional[str]:
     """从 PyPI 元数据中提取可用的 GitHub 仓库 URL。
 
     候选来源按可靠性排序：project_urls 优先 key > project_urls 其他 key >
-    home_page > download_url > description 正文里的链接。
+    home_page > download_url。description 中引用的第三方项目不能证明仓库归属。
     """
     candidates: List[tuple] = []
 
     project_urls = info.get("project_urls") or {}
     if isinstance(project_urls, dict):
+        source_urls = [
+            value.strip() for key, value in project_urls.items()
+            if str(key).strip().lower() in _SOURCE_URL_KEYS
+            and isinstance(value, str) and value.strip()
+        ]
+        for source_url in source_urls:
+            normalized = _normalize_github_repo_url(source_url)
+            if normalized:
+                return normalized
+        if any(urlparse(value).hostname and urlparse(value).hostname.lower()
+               not in {"github.com", "www.github.com"} for value in source_urls):
+            # 官方源码在其他平台时，文档、问题页等 GitHub 引用不能替代它。
+            return None
         for key, value in project_urls.items():
             if not isinstance(value, str):
                 continue
@@ -156,11 +167,6 @@ def _extract_github_repo_url(info: Dict[str, Any]) -> Optional[str]:
         value = info.get(field)
         if isinstance(value, str) and value:
             candidates.append((rank, value))
-
-    description = info.get("description") or ""
-    if isinstance(description, str) and description:
-        for match in _GITHUB_URL_IN_TEXT_RE.finditer(description):
-            candidates.append((5, match.group(0)))
 
     candidates.sort(key=lambda item: item[0])
     for _, raw in candidates:
@@ -210,15 +216,18 @@ def _create_session(retries: int = 3, backoff_factor: float = 0.5) -> requests.S
     
     return session
 
-def _fetch_pypi_metadata(package_name: str, max_retries: int = 3) -> Dict[str, Any]:
-    """获取 PyPI 包的元数据，带重试机制"""
-    url = f"https://pypi.org/pypi/{package_name}/json"
+def _fetch_pypi_metadata(
+    package_name: str, max_retries: int = 3, *, version: Optional[str] = None
+) -> Dict[str, Any]:
+    """获取 PyPI 项目或指定版本的元数据，沿用相同的请求重试机制。"""
+    version_path = f"/{quote(str(version), safe='')}" if version is not None else ""
+    url = f"https://pypi.org/pypi/{quote(package_name, safe='')}{version_path}/json"
     session = _create_session(retries=max_retries)
     timeout = (5, 15)  # (连接超时, 读取超时)
     
     for attempt in range(max_retries):
         try:
-            logger.debug(f"Attempting to fetch PyPI metadata for {package_name} (attempt {attempt + 1}/{max_retries})")
+            logger.debug(f"Attempting to fetch PyPI metadata for {package_name}@{version or 'latest'} (attempt {attempt + 1}/{max_retries})")
             response = session.get(url, timeout=timeout)
             response.raise_for_status()
             return response.json()
@@ -241,6 +250,26 @@ def _fetch_pypi_metadata(package_name: str, max_retries: int = 3) -> Dict[str, A
                 raise PyPIAPIError(f"Failed to fetch PyPI metadata: {str(e)}")
             logger.warning(f"Request failed (attempt {attempt + 1}): {str(e)}, retrying...")
             time.sleep(attempt * 2)
+
+
+def _release_info(metadata: Any, package_name: str, version: str) -> Dict[str, Any]:
+    """只接受属于所选包和版本的发布元数据；版本接口没有 releases 字段。"""
+    info = metadata.get("info") if isinstance(metadata, dict) else None
+    if not isinstance(info, dict):
+        raise PyPIAPIError("Release metadata has no info object")
+    name = info.get("name")
+    if not isinstance(name, str) or re.sub(r"[-_.]+", "-", name).lower() != re.sub(r"[-_.]+", "-", package_name).lower():
+        raise PyPIAPIError("Release metadata does not match the requested package")
+    if info.get("version") != version:
+        raise PyPIAPIError("Release metadata does not match the selected version")
+    return info
+
+
+def _has_registry_license(license_type: Optional[str]) -> bool:
+    return isinstance(license_type, str) and license_type.strip().upper() not in {
+        "", "NONE", "NAN", "UNKNOWN", "NOASSERTION", "UNLICENSED", "UNREACHABLE",
+    }
+
 
 async def _standardize_license(license_info: Dict[str, Any]) -> str:
     """
@@ -346,7 +375,7 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
         # 先精确命中；不中则按「补零后的数值元组相等」匹配（"1.0" == "1.0.0"），避免静默回退到最新版。
         releases = metadata["releases"]
         resolved_version = None
-        if version:
+        if not is_blank_value(version):
             if version in releases:
                 resolved_version = version
             else:
@@ -372,18 +401,28 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
                             break
         if resolved_version is None:
             resolved_version = metadata["info"]["version"]  # 回退到最新版本
-            if version:
+            if not is_blank_value(version):
                 logger.warning(
                     f"No PyPI release matched requested version {version!r}, falling back to latest: {resolved_version}"
                 )
         
-        # 4. 获取版本特定信息
-        version_info = next((r for r in metadata["releases"][resolved_version] 
-                           if r["packagetype"] == "sdist"), 
-                          metadata["releases"][resolved_version][0])
-        
-        # 5. 基本信息提取
+        # 4. info 属于项目最新版本；审核历史发布时必须取该发布自己的 info。
         info = metadata["info"]
+        metadata_fallback_reason = None
+        if resolved_version != info["version"]:
+            try:
+                release_metadata = _fetch_pypi_metadata(package_name, version=resolved_version)
+                info = _release_info(release_metadata, package_name, resolved_version)
+            except (PyPIAPIError, requests.exceptions.RequestException, ValueError) as e:
+                # 保留既有 latest 兜底值，同时让实际版本、链接和证据保持一致。
+                metadata_fallback_reason = (
+                    f"PyPI metadata unavailable for selected version {resolved_version}; "
+                    f"falling back to latest {info['version']}: {e}"
+                )
+                logger.warning(metadata_fallback_reason)
+                resolved_version = info["version"]
+
+        # 5. 基本信息提取
         readme_content = info.get("description", "")
         
         # 6. 源码仓库 URL 处理
@@ -398,6 +437,8 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
         # 7. 调用 GitHub API 获取完整信息（如果有 GitHub 仓库）
         github_result = None
         use_github_result = False
+        registry_license = None
+        github_default_fallback = False
 
         # 在调用 GitHub API 时也添加重试逻辑
         if repo_url:
@@ -414,7 +455,18 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
                     )
                     if github_result and github_result.get("status") == "success":
                         use_github_result = True
-                        logger.info("Successfully obtained GitHub analysis results, will use as primary source")
+                        if github_result.get("used_default_branch"):
+                            registry_license = await _standardize_license(info)
+                            if _has_registry_license(registry_license):
+                                use_github_result = False
+                                logger.info(
+                                    "GitHub has no matching version; using PyPI license evidence for %s@%s",
+                                    package_name, resolved_version,
+                                )
+                            else:
+                                github_default_fallback = True
+                        if use_github_result:
+                            logger.info("Successfully obtained GitHub analysis results, will use as primary source")
                     else:
                         status = github_result.get("status") if github_result else None
                         logger.warning(
@@ -445,17 +497,10 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             fallback_page = _pypi_project_page(package_name, resolved_version)
             final_license_files = github_result.get("license_files") or fallback_page
 
-            # GitHub 仓库无对应版本 tag（回退到默认分支 blob 链接）时，改用 PyPI
-            # 带版本号的页面链接，保证链接与版本对应；其余字段仍以 GitHub 分析为准。
-            if github_result.get("used_default_branch"):
-                versioned_url = fallback_page
-                from core.utils import is_url_reachable
-                if await is_url_reachable(versioned_url):
-                    logger.info(
-                        "GitHub has no matching version tag, using versioned PyPI link: %s",
-                        versioned_url,
-                    )
-                    final_license_files = versioned_url
+            # 注册表没有许可时保留原有 GitHub 兜底证据，并公开其实际分支。
+            if github_default_fallback:
+                resolved_version = github_result.get("resolved_version")
+                final_license_files = github_result.get("license_files") or repo_url
             final_license_analysis = github_result.get("license_analysis")
             final_has_license_conflict = github_result.get("has_license_conflict")
             final_readme_license = github_result.get("readme_license")
@@ -471,12 +516,17 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
                 final_copyright_notice = f"Copyright (c) {current_year} {author}"
                 
             license_determination_reason = "Analyzed via GitHub repository (primary source)"
+            if github_default_fallback:
+                license_determination_reason += (
+                    "; GitHub has no matching version and PyPI has no usable license; "
+                    "using GitHub default-branch evidence"
+                )
             
         else:
             # 没有GitHub结果或GitHub分析失败，使用PyPI信息
             logger.info("Using PyPI analysis results as primary source")
             
-            final_license_type = await _standardize_license(info)
+            final_license_type = registry_license if registry_license is not None else await _standardize_license(info)
             final_license_files = _pypi_project_page(package_name, resolved_version)
             final_license_analysis = None
             final_has_license_conflict = None
@@ -509,6 +559,9 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             final_copyright_notice = copyright_notice
             
             license_determination_reason = "Fetched from PyPI registry"
+
+        if metadata_fallback_reason:
+            license_determination_reason += "; " + metadata_fallback_reason
         
         # 9. 返回结果
         result = {
@@ -516,7 +569,7 @@ async def process_pypi_repository(url: str, version: Optional[str] = None) -> Di
             "repo_url": repo_url,
             "input_version": version,
             "resolved_version": resolved_version,
-            "used_default_branch": version is None,
+            "used_default_branch": True if github_default_fallback else version is None,
             "component_name": package_name,
             "license_files": final_license_files,
             "license_analysis": final_license_analysis,

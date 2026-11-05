@@ -496,7 +496,7 @@ def _github_result_fixture(used_default_branch, license_files):
 
 
 class TestPypiVersionedFallbackGating:
-    """process_pypi_repository 的 license_files 门控：只在 GitHub 无 tag 时换成 PyPI 带版本链接。"""
+    """版本未匹配时，PyPI 页面、许可和版权必须保持同一证据来源。"""
 
     async def _run(self, github_result, reachable=True):
         from core.pypi_utils import process_pypi_repository
@@ -504,6 +504,8 @@ class TestPypiVersionedFallbackGating:
         with patch("core.pypi_utils._fetch_pypi_metadata", return_value=_pypi_metadata_fixture()), \
              patch("core.github_utils.process_github_repository", new=AsyncMock(return_value=github_result)), \
              patch("core.github_utils.GitHubAPI", return_value=MagicMock()), \
+             patch("core.utils.analyze_license_content_async", new=AsyncMock(return_value={"licenses": []})), \
+             patch("core.pypi_utils.extract_copyright_info_async", new=AsyncMock(return_value="Copyright (c) 2018 Package Author")), \
              patch("core.utils.is_url_reachable", new=AsyncMock(return_value=reachable)) as mock_reach:
             result = await process_pypi_repository("https://pypi.org/project/foo-pkg/", "1.0.0")
         return result, mock_reach
@@ -517,23 +519,37 @@ class TestPypiVersionedFallbackGating:
         mock_reach.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_no_tag_uses_versioned_pypi_link(self):
+    async def test_no_tag_uses_pypi_license_copyright_and_versioned_link(self):
         blob = "https://github.com/foo/bar/blob/master/LICENSE"
-        result, _ = await self._run(_github_result_fixture(True, blob))
+        github_result = _github_result_fixture(True, blob)
+        github_result.update(
+            license_type="BSD-3-Clause", license_file_license="BSD-3-Clause",
+            readme_license="BSD-3-Clause",
+            license_analysis={"licenses": ["BSD-3-Clause"], "thirdparty_dirs": ["vendor"]},
+        )
+        result, _ = await self._run(github_result)
         assert result["status"] == "success"
         # Description 页（含许可证分类器与 README），不是只列构件的 Files 页
         assert result["license_files"] == "https://pypi.org/project/foo-pkg/1.0.0/"
-        # 其余字段仍取自 GitHub 分析
         assert result["license_type"] == "MIT"
-        assert result["license_file_license"] == "MIT"
-        assert result["copyright_notice"] == "Copyright (c) 2020 Foo"
-        assert result["license_determination_reason"] == "Analyzed via GitHub repository (primary source)"
+        assert result["license_file_license"] is None
+        assert result["readme_license"] is None
+        assert result["copyright_notice"] == "Copyright (c) 2018 Package Author"
+        assert not result.get("license_analysis")
+        assert "PyPI" in result["license_determination_reason"]
+        assert "BSD" not in str(result)
 
     @pytest.mark.asyncio
-    async def test_no_tag_but_unreachable_keeps_github_link(self):
+    async def test_page_probe_failure_does_not_restore_wrong_version_evidence(self):
         blob = "https://github.com/foo/bar/blob/master/LICENSE"
-        result, _ = await self._run(_github_result_fixture(True, blob), reachable=False)
-        assert result["license_files"] == blob
+        github_result = _github_result_fixture(True, blob)
+        github_result.update(license_type="BSD-3-Clause", license_file_license="BSD-3-Clause")
+        result, _ = await self._run(github_result, reachable=False)
+        # Registry JSON has already established the release; a blocked HTML probe
+        # cannot make a default-branch BSD body evidence for this MIT release.
+        assert result["license_files"] == "https://pypi.org/project/foo-pkg/1.0.0/"
+        assert result["license_type"] == "MIT"
+        assert result["license_file_license"] is None
 
     @pytest.mark.asyncio
     async def test_no_github_repo_uses_pypi_link(self):
@@ -542,6 +558,8 @@ class TestPypiVersionedFallbackGating:
         metadata = _pypi_metadata_fixture()
         metadata["info"]["project_urls"] = {}
         with patch("core.pypi_utils._fetch_pypi_metadata", return_value=metadata), \
+             patch("core.utils.analyze_license_content_async", new=AsyncMock(return_value={"licenses": []})), \
+             patch("core.pypi_utils.extract_copyright_info_async", new=AsyncMock(return_value="Copyright Package Author")), \
              patch("core.utils.is_url_reachable", new=AsyncMock(return_value=True)):
             result = await process_pypi_repository("https://pypi.org/project/foo-pkg/", "1.0.0")
         assert result["status"] == "success"

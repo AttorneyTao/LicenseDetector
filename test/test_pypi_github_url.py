@@ -21,6 +21,13 @@ from core.pypi_utils import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_registry_models(monkeypatch):
+    """Repository selection tests must never make external model requests."""
+    monkeypatch.setattr("core.utils.analyze_license_content_async", AsyncMock(return_value={"licenses": []}))
+    monkeypatch.setattr("core.pypi_utils.extract_copyright_info_async", AsyncMock(return_value="Copyright Package Author"))
+
+
 class TestNormalizeGithubRepoUrl:
     @pytest.mark.parametrize(
         "raw,expected",
@@ -92,13 +99,13 @@ class TestExtractGithubRepoUrl:
         info = {"project_urls": {}, "home_page": "https://github.com/psf/requests"}
         assert _extract_github_repo_url(info) == "https://github.com/psf/requests"
 
-    def test_falls_back_to_description(self):
-        """只在 README 里放了仓库链接的包。"""
+    def test_description_link_does_not_establish_package_repository(self):
+        """README 引用不能单独证明包与源码仓库的归属。"""
         info = {
             "project_urls": {"Funding": "https://github.com/sponsors/someone"},
             "description": "Read the code: https://github.com/foo/bar for details.",
         }
-        assert _extract_github_repo_url(info) == "https://github.com/foo/bar"
+        assert _extract_github_repo_url(info) is None
 
     def test_deprecated_key_still_usable_when_it_is_repo_root(self):
         """sqlalchemy 的唯一 GitHub 链接挂在 Issue Tracker 上，指向仓库根。"""
