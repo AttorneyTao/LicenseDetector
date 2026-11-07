@@ -18,6 +18,7 @@ from core.archive_utils import (
     guess_name_version_from_url,
     is_direct_archive_url,
     process_direct_archive_url,
+    analyze_extracted_directory,
 )
 
 
@@ -221,7 +222,7 @@ class TestProcessDirectArchiveUrl:
         assert result["license_file_license"] == "MIT"
         assert result["component_name"] == "redis"
         assert result["resolved_version"] == "7.2.7"
-        assert "LICENSE" in result["license_files"]
+        assert result["license_files"] == "https://download.redis.io/releases/redis-7.2.7.tar.gz"
         assert result["copyright_notice"] == "Copyright (c) 2024 Test Author"
         assert "Downloaded source archive" in result["license_determination_reason"]
         # license 原文应完整保留在 license_text 字段
@@ -261,6 +262,229 @@ class TestProcessDirectArchiveUrl:
     def test_non_archive_url_returns_none(self):
         result = asyncio.run(process_direct_archive_url("https://github.com/redis/redis"))
         assert result is None
+
+
+R_DESCRIPTION_CASES = [
+    ("tximport", "1.40.0", "LGPL (>=2)"),
+    ("survminer", "0.5.2", "GPL-2"),
+    ("survival", "3.8-12", "LGPL (>= 2)"),
+    ("tradeSeq", "1.26.0", "MIT + file LICENSE"),
+    ("SingleCellExperiment", "1.34.0", "GPL-3"),
+    ("slingshot", "2.20.0", "Artistic-2.0"),
+    ("RNASeqPower", "1.52.0", "LGPL (>=2)"),
+    ("pwr", "1.3-0", "GPL (>= 3)"),
+    ("platetools", "0.1.7", "MIT + file LICENSE"),
+    ("ReactomePA", "1.56.0", "GPL-2"),
+    ("muscat", "1.26.0", "GPL-3"),
+    ("gsDesign", "3.11.0", "GPL (>= 3)"),
+    ("FlowSOM", "2.20.0", "GPL (>= 2)"),
+    ("DEqMS", "1.30.0", "LGPL"),
+    ("coloc", "5.2.3", "GPL"),
+    ("CATALYST", "1.36.0", "GPL (>=2)"),
+    ("BiocManager", "1.30.27", "Artistic-2.0"),
+    ("ALDEx2", "1.44.0", "GPL (>=3)"),
+    ("WGCNA", "1.74", "GPL (>= 2)"),
+    ("harmony", "2.0.5", "GPL-3"),
+    ("readr", "2.2.0", "MIT + file LICENSE"),
+    ("tidyr", "1.3.2", "MIT + file LICENSE"),
+    ("dplyr", "1.2.1", "MIT + file LICENSE"),
+    ("ggplot2", "4.0.3", "MIT + file LICENSE"),
+]
+
+
+def _description(name="tradeSeq", version="1.26.0", license="MIT + file LICENSE"):
+    return f"Package: {name}\nVersion: {version}\nLicense: {license}\nAuthors@R: Sample Author\n"
+
+
+def _empty_analysis():
+    return {"licenses": [], "spdx_expression": None}
+
+
+@pytest.mark.parametrize("name,version,declared", R_DESCRIPTION_CASES)
+def test_r_description_recovers_all_24_observed_package_shapes(tmp_path, name, version, declared):
+    description = _description(name, version, declared)
+    (tmp_path / "DESCRIPTION").write_text(description)
+    stub = "YEAR: 2019\nCOPYRIGHT HOLDER: Package Authors\n"
+    has_license = "file LICENSE" in declared
+    if has_license:
+        (tmp_path / "LICENSE").write_text(stub)
+    seen = []
+
+    async def analyze(content, source_url=None):
+        seen.append(content)
+        if "DESCRIPTION:" in content:
+            return {"licenses": ["MIT"], "spdx_expression": "MIT"}
+        return _empty_analysis()
+
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock(side_effect=analyze)), \
+         patch("core.utils.construct_copyright_notice_async", new=AsyncMock(return_value="Copyright supplied by existing LLM")) as copyright:
+        result = asyncio.run(analyze_extracted_directory(
+            str(tmp_path), f"https://example.org/{name}_{version}.tar.gz", name, version, version
+        ))
+    assert result["license_type"] == "MIT"  # Only the mocked model decides SPDX.
+    assert result["resolved_version"] == version
+    assert result["license_file_license"] == "MIT"
+    assert result["copyright_notice"] == "Copyright supplied by existing LLM"
+    assert description in seen[-1]
+    assert (stub in seen[-1]) == has_license
+    assert "DESCRIPTION" in result["license_determination_reason"]
+    assert result["_archive_license_link_evidence"]["path"] == "DESCRIPTION"
+    assert copyright.await_args.args[-1] == seen[-1]
+    assert len(seen) == (2 if has_license else 1)
+
+
+@pytest.mark.parametrize("successful_source", ["LICENSE", "README.md"])
+def test_existing_license_and_readme_success_does_not_read_description(tmp_path, successful_source):
+    (tmp_path / successful_source).write_text("Existing Apache license evidence")
+    (tmp_path / "DESCRIPTION").write_text(_description())
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock(return_value={"licenses": ["Apache-2.0"]})) as analyze, \
+         patch("core.utils.construct_copyright_notice_async", new=AsyncMock(return_value="Original notice")), \
+         patch("core.archive_utils._read_r_description_evidence", new=AsyncMock()) as read_description:
+        result = asyncio.run(analyze_extracted_directory(str(tmp_path), "https://example.org/a.tar.gz", "tradeSeq", "1.26.0", "1.26.0"))
+    assert result["license_type"] == "Apache-2.0"
+    assert result["copyright_notice"] == "Original notice"
+    analyze.assert_awaited_once()
+    read_description.assert_not_awaited()
+
+
+@pytest.mark.parametrize("content,path", [
+    (_description(name="foreign"), "DESCRIPTION"),
+    (_description(version="9.0.0"), "DESCRIPTION"),
+    ("Version: 1.26.0\nLicense: MIT\n", "DESCRIPTION"),
+    ("Package: tradeSeq\nLicense: MIT\n", "DESCRIPTION"),
+    (_description(license=""), "DESCRIPTION"),
+    (_description(), "vendor/DESCRIPTION"),
+    ("This prose mentions MIT", "DESCRIPTION"),
+])
+def test_unrelated_or_incomplete_description_is_not_used(tmp_path, content, path):
+    destination = tmp_path / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(content)
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock()) as analyze:
+        result = asyncio.run(analyze_extracted_directory(str(tmp_path), "https://example.org/a.tar.gz", "tradeSeq", "1.26.0", "1.26.0"))
+    assert result is None
+    analyze.assert_not_awaited()
+
+
+@pytest.mark.parametrize("reference", ["../outside", "/tmp/outside", "missing.txt"])
+def test_description_cannot_use_unreadable_or_external_license_reference(tmp_path, reference):
+    (tmp_path / "DESCRIPTION").write_text(_description(license=f"MIT + file {reference}"))
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock()) as analyze:
+        result = asyncio.run(analyze_extracted_directory(str(tmp_path), "https://example.org/a.tar.gz", "tradeSeq", "1.26.0", "1.26.0"))
+    assert result is None
+    analyze.assert_not_awaited()
+
+
+def test_multiline_description_and_referenced_license_stay_together(tmp_path):
+    (tmp_path / "DESCRIPTION").write_text(_description(name="TRADESEQ", license="MIT +\n    file LICENSE.note"))
+    (tmp_path / "LICENSE.note").write_text("YEAR: 2019\nCOPYRIGHT HOLDER: Authors\n")
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock(side_effect=[_empty_analysis(), {"licenses": ["MIT"]}])) as analyze, \
+         patch("core.utils.construct_copyright_notice_async", new=AsyncMock(return_value="Original LLM notice")):
+        result = asyncio.run(analyze_extracted_directory(str(tmp_path), "https://example.org/a.tar.gz", "tradeSeq", "1.26.0", "1.26.0"))
+    assert result["license_type"] == "MIT"
+    assert "file LICENSE.note" in analyze.await_args.args[0]
+    assert "COPYRIGHT HOLDER: Authors" in analyze.await_args.args[0]
+
+
+@pytest.mark.parametrize("model_response", [None, {"licenses": []}, {"licenses": [], "spdx_expression": "MIT"}])
+def test_description_without_confirmed_model_result_preserves_failure(tmp_path, model_response):
+    (tmp_path / "DESCRIPTION").write_text(_description(license="MIT"))
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock(return_value=model_response)), \
+         patch("core.utils.construct_copyright_notice_async", new=AsyncMock()) as copyright:
+        result = asyncio.run(analyze_extracted_directory(str(tmp_path), "https://example.org/a.tar.gz", "tradeSeq", "1.26.0", "1.26.0"))
+    assert result is None
+    copyright.assert_not_awaited()
+
+
+def test_archive_model_error_returns_none_and_cleans_temp_directory(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "DESCRIPTION").write_text(_description(license="MIT"))
+    package = tmp_path / "pkg.tar.gz"
+    with tarfile.open(package, "w:gz") as tar:
+        tar.add(source, arcname="tradeSeq")
+
+    async def download(url, dest_path, log_queue=None):
+        import shutil
+        shutil.copyfile(package, dest_path)
+        return package.stat().st_size
+
+    created = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def track(*args, **kwargs):
+        directory = real_mkdtemp(*args, **kwargs)
+        created.append(directory)
+        return directory
+
+    with patch("core.archive_utils.download_archive_with_progress", side_effect=download), \
+         patch("core.archive_utils.tempfile.mkdtemp", side_effect=track), \
+         patch("core.utils.analyze_license_content_async", new=AsyncMock(side_effect=RuntimeError("model unavailable"))):
+        result = asyncio.run(process_direct_archive_url("https://example.org/tradeSeq_1.26.0.tar.gz"))
+    assert result is None
+    assert created and all(not os.path.exists(directory) for directory in created)
+
+
+def test_font_mode_does_not_use_r_description(tmp_path):
+    (tmp_path / "DESCRIPTION").write_text(_description(license="MIT"))
+    with patch("core.utils.analyze_license_content_async", new=AsyncMock()) as analyze:
+        result = asyncio.run(analyze_extracted_directory(str(tmp_path), "https://example.org/a.tar.gz", "tradeSeq", "1.26.0", "1.26.0", font_mode=True))
+    assert result is None
+    analyze.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["cli", "api"])
+@pytest.mark.parametrize("previous", ["no_license", "error", "exception"])
+async def test_description_fallback_through_existing_entrypoints(tmp_path, monkeypatch, entry, previous):
+    import pandas as pd
+    import api
+    import main
+    import shutil
+
+    source = tmp_path / "package"
+    source.mkdir()
+    (source / "DESCRIPTION").write_text(_description(license="Artistic-2.0"))
+    archive = tmp_path / "package.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(source, arcname="tradeSeq")
+    module = main if entry == "cli" else api
+    upstream = AsyncMock(side_effect=RuntimeError("upstream unavailable")) if previous == "exception" else AsyncMock(return_value={
+        "status": "error" if previous == "error" else "success", "license_type": None,
+    })
+    monkeypatch.setattr(module, "process_github_repository", upstream)
+
+    async def download(url, dest_path, log_queue=None):
+        shutil.copyfile(archive, dest_path)
+        return archive.stat().st_size
+
+    downloader = AsyncMock(side_effect=download)
+    monkeypatch.setattr("core.archive_utils.download_archive_with_progress", downloader)
+    analyze = AsyncMock(return_value={"licenses": ["Artistic-2.0"], "spdx_expression": "Artistic-2.0"})
+    monkeypatch.setattr("core.utils.analyze_license_content_async", analyze)
+    monkeypatch.setattr("core.utils.construct_copyright_notice_async", AsyncMock(return_value="LLM original notice"))
+
+    async def keep_link(row, result, context):
+        return result
+
+    monkeypatch.setattr(module, "prefer_license_webpage", keep_link)
+    monkeypatch.chdir(tmp_path)
+    url = "https://example.org/tradeSeq_1.26.0.tar.gz"
+    rows = pd.DataFrame([dict(name="tradeSeq", version="1.26.0", github_url=url,
+                              package_manager="generic", serial_number="00041")])
+    results = await (main.process_all_repos(None, rows) if entry == "cli" else api._process_repositories(None, rows))
+    assert len(results) == 1
+    result = results[0]
+    assert result["license_type"] == "Artistic-2.0"
+    assert result["copyright_notice"] == "LLM original notice"
+    assert result["input_url"] == url
+    assert result["resolved_version"] == "1.26.0"
+    assert result["serial_number"] == "00041"
+    assert result["package_manager"] == "generic"
+    upstream.assert_awaited_once()
+    downloader.assert_awaited_once()
+    analyze.assert_awaited_once()
+    assert "License: Artistic-2.0" in analyze.await_args.args[0]
 
 
 if __name__ == "__main__":

@@ -307,6 +307,58 @@ async def _read_local_file(root_dir: str, rel_path: str) -> Optional[str]:
         return None
 
 
+async def _read_r_description_evidence(
+    root_dir: str, component_name: str, resolved_version: Optional[str]
+) -> Optional[Tuple[str, str, List[str]]]:
+    """读取同包 DESCRIPTION 及其引用的许可文件，许可和版权仍交由 LLM 判断。"""
+    if not os.path.isfile(os.path.join(root_dir, "DESCRIPTION")):
+        return None
+    description = await _read_local_file(root_dir, "DESCRIPTION")
+    if not description:
+        return None
+
+    fields: Dict[str, str] = {}
+    key: Optional[str] = None
+    for line in description.splitlines():
+        if line[:1].isspace() and key:
+            fields[key] += " " + line.strip()
+        elif ":" in line:
+            key, value = line.split(":", 1)
+            fields[key] = value.strip()
+        else:
+            key = None
+    package = fields.get("Package", "")
+    version = fields.get("Version", "")
+    declared_license = fields.get("License", "")
+    if not package or not version or not declared_license:
+        return None
+    if package.casefold() != str(component_name).strip().casefold():
+        logger.info("[ARCHIVE] DESCRIPTION Package 与当前组件不一致，跳过")
+        return None
+    if resolved_version and version != str(resolved_version).strip():
+        logger.info("[ARCHIVE] DESCRIPTION Version 与当前版本不一致，跳过")
+        return None
+
+    parts = [f"DESCRIPTION:\n{description}"]
+    paths = ["DESCRIPTION"]
+    root = os.path.realpath(root_dir)
+    for reference in re.findall(r"\bfile\s+([^\s+|]+)", declared_license, re.IGNORECASE):
+        candidate = os.path.realpath(os.path.join(root, reference))
+        if os.path.isabs(reference) or os.path.commonpath([root, candidate]) != root:
+            logger.info("[ARCHIVE] DESCRIPTION 引用文件超出当前解包目录，跳过")
+            return None
+        relative = os.path.relpath(candidate, root).replace(os.sep, "/")
+        if relative in paths:
+            continue
+        content = await _read_local_file(root_dir, relative)
+        if not content:
+            logger.info("[ARCHIVE] DESCRIPTION 引用的许可文件不可读，跳过")
+            return None
+        parts.append(f"{relative}:\n{content}")
+        paths.append(relative)
+    return description, "\n\n".join(parts), paths
+
+
 async def analyze_extracted_directory(
     root_dir: str,
     source_url: str,
@@ -322,7 +374,8 @@ async def analyze_extracted_directory(
     2. 多个 license 文件时用 LLM 挑选主要 license 文件；
     3. LLM 分析 license 内容得到 SPDX 表达式；
     4. 都没有则分析 README 中的许可证声明；
-    5. 构造版权声明。
+    5. 仍无许可时补读同包 DESCRIPTION 及其引用的许可文件；
+    6. 构造版权声明。
 
     找到 license 信息时返回与 GitHub 流程兼容的结果 dict，否则返回 None。
     """
@@ -436,6 +489,47 @@ async def analyze_extracted_directory(
                 "status": "success",
                 "license_determination_reason": (
                     f"Downloaded source archive; found license info in README ({readme_path}): {readme_analysis['licenses']}"
+                ),
+            }
+
+    # R 包的许可声明常在 DESCRIPTION，LICENSE 可能只有年份和版权人。
+    # 仅在既有 LICENSE/README 分析未取得许可后补充这一组同包证据。
+    r_evidence = None if font_mode else await _read_r_description_evidence(
+        root_dir, component_name, resolved_version
+    )
+    if r_evidence:
+        description, evidence_content, evidence_paths = r_evidence
+        logger.info("[ARCHIVE] 补充分析 R 包许可证据: %s", ", ".join(evidence_paths))
+        description_analysis = await analyze_license_content_async(
+            evidence_content, f"{source_url} ({', '.join(evidence_paths)})"
+        )
+        if description_analysis and description_analysis.get("licenses"):
+            description_analysis.setdefault("thirdparty_dirs", thirdparty_dirs)
+            license_type = description_analysis.get("spdx_expression") or description_analysis["licenses"][0]
+            copyright_notice = await construct_copyright_notice_async(
+                year, component_name, component_name, resolved_version or "",
+                component_name, readme_content, evidence_content
+            )
+            return {
+                "input_url": source_url,
+                "repo_url": source_url,
+                "input_version": input_version,
+                "resolved_version": resolved_version or "",
+                "used_default_branch": False,
+                "component_name": component_name,
+                "license_files": source_url,
+                EVIDENCE_KEY: {"path": "DESCRIPTION", "digest": content_digest(description)},
+                "license_analysis": description_analysis,
+                "license_type": license_type,
+                "has_license_conflict": False,
+                "readme_license": None,
+                "license_file_license": license_type,
+                "copyright_notice": copyright_notice,
+                "license_text": prepare_license_text(evidence_content),
+                "status": "success",
+                "license_determination_reason": (
+                    "Downloaded source archive and analyzed R package license evidence: "
+                    + ", ".join(evidence_paths)
                 ),
             }
 
