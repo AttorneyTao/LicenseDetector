@@ -1,272 +1,104 @@
-# 🚀 快速开始指南
+# 快速开始
 
-## 原有功能（保持不变）
+## 安装和配置
 
-### 1. CLI 模式 - 处理本地文件
-
-```bash
-# 方式一: 使用uv运行（推荐）
-uv run main.py
-
-# 方式二: 激活虚拟环境后运行
-.venv\Scripts\activate
-python main.py
-```
-
-**工作流程：**
-1. 将需要分析的文件保存为 `input.xlsx`
-2. 运行上述命令
-3. 输出文件自动保存到 `outputs/` 目录
-4. 检查 `logs/` 目录了解执行详情
-
-> **字体扫描模式**：当 `input.xlsx` 全部为字体时，使用 `python main.py --font`
-> 按字体来源站点获取授权与版权，详见 [FONT_SCANNING.md](FONT_SCANNING.md)。
-
----
-
-## 新增功能 - API 服务
-
-### 2. API 模式 - 通过HTTP接口发送文件
-
-#### 步骤1：启动 API 服务
+需要 Python 3.13+。从仓库根目录执行：
 
 ```bash
-# 默认监听 0.0.0.0:8000
-python main.py --api
-
-# 或指定端口
-python main.py --api --port 8080
-
-# 或指定地址和端口
-python main.py --api --host 127.0.0.1 --port 8000
-```
-
-#### 步骤2：配置邮件（可选）
-
-编辑 `.env` 文件：
-
-```env
-SMTP_SERVER=smtp.gmail.com
-SMTP_PORT=587
-SENDER_EMAIL=your_email@gmail.com
-SENDER_PASSWORD=your_app_password
-```
-
-> 💡 **为何需要应用专用密码？**
-> 出于安全考虑，Gmail等邮箱不允许直接使用账户密码。
-> 需要生成专用的应用密码用于此程序。
-
-#### 步骤3：上传文件并分析
-
-**方案A：发送邮件（需配置邮箱）**
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/analyze" \
-  -F "file=@input.xlsx" \
-  -F "email=recipient@example.com"
-```
-
-**方案B：直接下载（无需邮箱配置）**
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/analyze-and-download" \
-  -F "file=@input.xlsx" \
-  --output result.xlsx
-```
-
----
-
-## 📊 查看 API 文档
-
-启动 API 服务后，访问：
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
-- **健康检查**: http://localhost:8000/health
-
----
-
-## 🐍 Python 脚本使用
-
-### 方式1：使用provided的测试脚本
-
-```bash
-# 启动 API 服务（新终端）
-python main.py --api &
-
-# 运行测试脚本
-python test_api.py
-```
-
-### 方式2：自己的脚本
-
-```python
-import requests
-
-# 上传文件并获取结果
-with open("input.xlsx", "rb") as f:
-    response = requests.post(
-        "http://localhost:8000/api/v1/analyze-and-download",
-        files={"file": f}
-    )
-    
-    # 保存结果
-    with open("output.xlsx", "wb") as out:
-        out.write(response.content)
-```
-
----
-
-## ⚙️ 常见邮箱配置
-
-### Gmail
-```env
-SMTP_SERVER=smtp.gmail.com
-SMTP_PORT=587
-SENDER_EMAIL=your_email@gmail.com
-SENDER_PASSWORD=xxxx xxxx xxxx xxxx  # 16位应用专用密码
-```
-> 获取应用密码: https://myaccount.google.com/apppasswords
-
-### 网易邮箱
-```env
-SMTP_SERVER=smtp.163.com
-SMTP_PORT=587
-SENDER_EMAIL=your_email@163.com
-SENDER_PASSWORD=your_password
-```
-
-### QQ邮箱
-```env
-SMTP_SERVER=smtp.qq.com
-SMTP_PORT=587
-SENDER_EMAIL=your_qq@qq.com
-SENDER_PASSWORD=your_password
-```
-
-### Outlook
-```env
-SMTP_SERVER=smtp.office365.com
-SMTP_PORT=587
-SENDER_EMAIL=your_email@outlook.com
-SENDER_PASSWORD=your_password
-```
-
----
-
-## 🔍 故障排除
-
-### API 无法连接
-```
-错误: Failed to connect to localhost:8000
-解决: 確保 API 已启动 (python main.py --api)
-```
-
-### 邮件发送失败
-```
-错误: Authentication failed
-解决: 检查 SENDER_EMAIL 和 SENDER_PASSWORD 配置
-```
-
-### 找不到 input.xlsx
-```
-错误: ModuleNotFoundError: input.xlsx not found
-解决: 确保 input.xlsx 在当前工作目录
-```
-
----
-
-## 📁 文件结构
-
-```
-.
-├── main.py                 # 主程序（支持CLI和API）
-├── api.py                  # FastAPI 应用
-├── test_api.py             # API 测试脚本
-├── prompts.yaml            # LLM 提示词
-├── pyproject.toml          # 项目配置和依赖
-├── .env                    # 本地配置（含邮件设置）
-├── .env.example            # 配置模板
-├── API_USAGE.md            # API 详细文档
-├── CHANGES.md              # 改动说明
-├── core/
-│   ├── email_utils.py      # 邮件工具（新）
-│   ├── github_utils.py     # GitHub API
-│   ├── config.py           # 配置
-│   └── ...                 # 其他工具
-├── input.xlsx              # 输入文件（由用户提供）
-├── outputs/                # 输出目录
-├── logs/                   # 日志目录
-└── temp/                   # 临时文件目录
-```
-
----
-
-## 💡 使用建议
-
-### 场景1：一次性分析（推荐CLI模式）
-```bash
-# 放入 input.xlsx
-uv run main.py
-# 输出保存到 outputs/
-```
-
-### 场景2：服务器部署（推荐API模式）
-```bash
-# 启动 API 服务
-python main.py --api --host 0.0.0.0 --port 8000
-
-# 其他系统通过 API 调用
-# curl -F "file=@input.xlsx" http://server:8000/api/v1/...
-```
-
-### 场景3：批量处理（混合模式）
-```bash
-# 启动 API（后台）
-python main.py --api &
-
-# 写脚本批量上传
-for file in *.xlsx; do
-    curl -X POST "http://localhost:8000/api/v1/analyze-and-download" \
-      -F "file=@$file" \
-      --output "output_$file"
-done
-```
-
----
-
-## 📚 更多帮助
-
-查看详细文档：
-- **API_USAGE.md** - API 完整使用指南
-- **CHANGES.md** - 项目改动说明
-- **main.py --help** - 命令行帮助
-
----
-
-## ✅ 验证安装
-
-```bash
-# 检查依赖是否安装
 uv sync
-
-# 检查 Python 版本
-python --version  # 需要 >= 3.13
-
-# 运行语法检查
-python -m py_compile main.py api.py
-
-# 测试导入
-python -c "import api; import core.email_utils; print('OK')"
+uv run main.py --help
 ```
 
----
+不用 uv 时，可先创建虚拟环境，再安装依赖：
 
-## 🎯 下一步
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
 
-1. **配置邮箱**（可选）- 编辑 `.env`
-2. **启动 API**（可选）- `python main.py --api`
-3. **测试功能** - 使用 `test_api.py` 或 `curl`
-4. **部署上线**（可选）- 参考 API_USAGE.md 的部署建议
+Windows PowerShell 的激活命令为 `.venv\Scripts\Activate.ps1`。后续示例使用 `uv run`；已激活环境时可改用 `python`。
 
-祝您使用愉快！🎉
+手动创建 `.env`，填写实际凭据；当前没有随仓库提交的 `.env.example`。
+
+```dotenv
+GITHUB_TOKEN=your_github_token
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_key
+USE_LLM=true
+```
+
+Qwen 配置、缓存、代理和邮件参数见[配置说明](CONFIGURATION.md)。程序使用根目录的 `prompts.yaml`、`input.xlsx` 和相对日志路径，请在项目根目录启动。
+
+## 准备输入
+
+创建 `input.xlsx`，使用默认首张工作表，第一行为字段名：
+
+| name | version | github_url | package_manager | serial_number |
+| --- | --- | --- | --- | --- |
+| requests | 2.31.0 | https://pypi.org/project/requests/ | pypi | 00001 |
+| serde | 1.0.197 | pkg:cargo/serde@1.0.197 | cargo | 00002 |
+
+`github_url` 为必要定位字段。原三列格式仍可使用，后两个可选字段会带入输出。流水号在录入前设为文本；单纯改变显示格式无法恢复 Excel 已截断的数字。[输入与输出](INPUT_OUTPUT.md)列出完整规则。
+
+## 选择入口
+
+### 本地软件包扫描
+
+```bash
+uv run main.py
+```
+
+结果位于 `outputs/output_latest.xlsx` 和带时间戳的副本，工作表为“分析结果”。中间结果位于 `temp/`，详细日志位于 `logs/`；中间结果不会在下次启动时自动恢复。
+
+### Web 页面与 API
+
+```bash
+uv run main.py --api --host 127.0.0.1 --port 8000
+```
+
+访问 `http://127.0.0.1:8000/` 上传 Excel；接口文档位于 `/docs` 或 `/redoc`。需要其他机器访问时再设置 `--host 0.0.0.0` 并配置网络访问控制。
+
+```bash
+curl --fail-with-body http://127.0.0.1:8000/health
+curl --fail-with-body -X POST http://127.0.0.1:8000/api/v1/analyze-and-download \
+  -F 'file=@input.xlsx' --output result.xlsx
+```
+
+不要将 `/api/v1/analyze-stream` 的文本日志保存为 `.xlsx`；直接下载使用上述接口。[API 使用](API_USAGE.md)说明各端点的真实响应类型。
+
+### 邮件结果
+
+先配置 SMTP，再提交明确的收件邮箱：
+
+```bash
+curl --fail-with-body -X POST http://127.0.0.1:8000/api/v1/analyze \
+  -F 'file=@input.xlsx' -F 'email=recipient@example.com' \
+  -F 'email_subject=开源组件许可审核结果'
+```
+
+该请求等待审核及邮件处理后返回 JSON。检查 `email_sent`；HTTP 200 或 `status=success` 不能单独证明邮件发送成功。过程中查看日志可用 `analyze-stream-email`。
+
+### 字体
+
+```bash
+uv run main.py --font
+```
+
+用于整张输入表都是字体的场景。当前 API 上传端点没有字体模式参数，`--api --font` 也不会将 API 切换为字体模式。详见[字体模式](FONT_SCANNING.md)。
+
+## 检查结果和排障
+
+先核对行数和流水号，再看请求与实际版本、许可结论、证据链接、风险等级及判定理由。版权字段可能是最终兜底文本；`AND Others` 表示检测到第三方内容提示。
+
+| 现象 | 排查方法 |
+| --- | --- |
+| 无法读取 `input.xlsx` | 确认工作目录、首行表头及 `github_url` 列；业务表需先整理为标准输入 |
+| 模型初始化失败 | 核对 `LLM_PROVIDER` 与所选提供方的 API key |
+| API 无法访问 | 核对监听地址、端口、服务日志与反向代理；`/health` 只反映 API 存活 |
+| 使用了其他版本 | 对照 `input_version`、`resolved_version`、`used_default_branch` 与判定理由 |
+| 邮件未收到 | 检查 `email_sent` 和 SMTP 日志；接口默认 STARTTLS，避免直接套用隐式 TLS 端口 |
+| 下载文件无法打开 | 检查状态、Content-Type 和内容，确认未将 JSON 错误或文本日志保存为 Excel |
+| Docker 构建或健康检查失败 | 先看 [Docker 当前限制](DOCKER.md)，避免按旧文档假定配置已完整验证 |
+
+部署见[部署与运维](DEPLOYMENT.md)，回归测试见[测试与开发](TESTING.md)。

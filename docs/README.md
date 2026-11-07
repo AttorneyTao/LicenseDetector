@@ -1,46 +1,21 @@
-# 📚 文档目录
+# 文档导航
 
-所有项目文档都在这里。根据你的需求选择阅读：
+新用户从[快速开始](QUICKSTART.md)进入。输入模板和输出解释统一放在[输入与输出](INPUT_OUTPUT.md)，生态路由与证据选择统一放在[审核流程](AUDIT_FLOW.md)。
 
-## 📖 文档列表
+| 任务 | 文档 |
+| --- | --- |
+| 安装、运行本地扫描和 Web 页面 | [QUICKSTART.md](QUICKSTART.md) |
+| 准备 Excel、保留流水号、解释输出列 | [INPUT_OUTPUT.md](INPUT_OUTPUT.md) |
+| 理解注册表、仓库、发布包和最终回退 | [AUDIT_FLOW.md](AUDIT_FLOW.md) |
+| 集成 API、日志流、下载和邮件 | [API_USAGE.md](API_USAGE.md) |
+| 配置模型、缓存、代理和 SMTP | [CONFIGURATION.md](CONFIGURATION.md) |
+| 核对 Actions 部署、服务和日志 | [DEPLOYMENT.md](DEPLOYMENT.md) |
+| 使用 Docker 配置并了解当前限制 | [DOCKER.md](DOCKER.md) |
+| 开发、回归测试和真实联网验证 | [TESTING.md](TESTING.md) |
+| 了解 crates.io 特有输入及版本规则 | [CRATE_IO_INTEGRATION.md](CRATE_IO_INTEGRATION.md) |
+| 使用字体 CLI 和站点适配器 | [FONT_SCANNING.md](FONT_SCANNING.md) |
+| 查看近期功能变更 | [CHANGES.md](CHANGES.md) |
 
-| 文档 | 内容 |
-|------|------|
-| **[QUICKSTART.md](QUICKSTART.md)** | 快速入门：CLI / API 模式、邮箱配置、故障排除 |
-| **[FONT_SCANNING.md](FONT_SCANNING.md)** | 🔤 字体扫描模式（`--font`）：按站点获取字体授权与版权 |
-| **[API_USAGE.md](API_USAGE.md)** | API 详细使用指南和示例 |
-| **[DOCKER.md](DOCKER.md)** | 🐳 Docker 容器化使用与部署（CLI / API / 生产） |
-| **[CRATE_IO_INTEGRATION.md](CRATE_IO_INTEGRATION.md)** | Rust crates.io 包分析集成说明 |
-| **[CHANGES.md](CHANGES.md)** | 项目改动说明 / 变更记录 |
+这些文档描述当前已提交实现，不包含工作区中尚未提交的补丁或外部运维脚本的完整实现。命令均从仓库根目录运行；模型及网络测试可能产生请求和费用，执行范围见测试说明。
 
-## 🧭 按场景选择
-
-| 我想做什么 | 查看 |
-|----------|------|
-| 快速上手项目 | [QUICKSTART.md](QUICKSTART.md) |
-| 扫描字体授权（input.xlsx 全为字体） | [FONT_SCANNING.md](FONT_SCANNING.md) |
-| 使用 / 集成 HTTP API | [API_USAGE.md](API_USAGE.md) |
-| 用 Docker 运行或部署 | [DOCKER.md](DOCKER.md) |
-| 分析 Rust crate | [CRATE_IO_INTEGRATION.md](CRATE_IO_INTEGRATION.md) |
-| 了解项目改动 | [CHANGES.md](CHANGES.md) |
-
-## ⚡ 关键命令速查
-
-```bash
-# CLI 模式（软件包，处理 input.xlsx）
-python main.py
-
-# 字体扫描模式（input.xlsx 全为字体）
-python main.py --font
-
-# API / Web 模式
-python main.py --api            # 访问 http://localhost:8000/docs
-
-# Docker
-docker-compose --profile cli run analyzer-cli    # CLI
-docker-compose --profile api up -d               # API
-```
-
----
-
-**提示**：更顶层的项目介绍见仓库根目录的 [`README.md`](../README.md)。
+项目概览见[根目录 README](../README.md)。

@@ -1,178 +1,70 @@
-# 🐳 Docker 容器化使用指南
+# Docker 配置与当前限制
 
-## 概述
+仓库提供 [`Dockerfile`](../Dockerfile)、开发用 [`docker-compose.yml`](../docker-compose.yml) 和含 Nginx 的 [`docker-compose.prod.yml`](../docker-compose.prod.yml)。当前 master 自动部署采用 self-hosted runner + systemd，未使用此 Compose 路径，详见[部署说明](DEPLOYMENT.md)。
 
-本项目已完全容器化，支持以下部署方式：
+## 使用前检查
 
-1. **CLI模式** - 处理本地文件（软件包模式，或字体扫描模式 `--font`）
-2. **API模式** - HTTP服务
-3. **生产模式** - 包含反向代理
+现有文件有以下可从代码确认的差异，不能视为已经验证的完整生产镜像：
 
-### 前置条件
+| 项目 | 当前状态及影响 |
+| --- | --- |
+| 构建上下文 | `.dockerignore` 排除了 `.env`、`README.md` 和 `*.md`，Dockerfile 却包含相应 `COPY`；干净构建可能失败 |
+| 依赖 | Dockerfile 手工列举依赖，未与 `pyproject.toml`/`uv.lock` 同步，未列出近期使用的 `zstandard` |
+| 风险表 | Dockerfile 未复制 `license_risk.yaml`；缺失时风险加载器退回未知风险 |
+| 健康检查 | 生产 Compose 使用 `curl`，当前镜像只显式安装 gcc，未保证 curl 存在 |
+| provider | 生产 Compose 未显式传递 `LLM_PROVIDER` 等全部可配置变量，不能假设宿主 `.env` 的所有键都会进入容器 |
+| 服务健康 | 容器 `/health` 仅探测 API 存活，不验证模型、邮箱或审核结果 |
 
-- Docker 安装完成 + Docker Compose（推荐）
-- `.env` 文件已配置（GitHub Token、LLM Key、邮件配置等）
-- 首次构建镜像：`docker build -t github-license-analyzer:latest .`（约 5–10 分钟）
+本轮仅更新文档，没有修改以上构建/配置文件。使用容器部署前应先核对并另行修复所需项目，然后实际构建及验证，不能只根据下列命令存在就认定可用。
 
----
+## 配置入口
 
-## 快捷工具（推荐）
+从根目录运行，准备 `.env`、CLI 使用的 `input.xlsx` 和输出目录。开发 Compose 使用 `env_file: .env`，挂载 outputs/logs/temp，并将模型缓存置于命名卷 `/var/lib/licensedetector`。
 
-### Linux/Mac (Makefile)
-```bash
-make docker-cli      # CLI 模式处理 input.xlsx
-make docker-api-bg   # 后台启动 API 服务
-make docker-logs     # 查看日志
-make docker-stop     # 停止容器
-```
-
-### Windows (PowerShell)
-```bash
-.\docker.ps1 cli
-.\docker.ps1 api
-.\docker.ps1 stop
-```
-
----
-
-## 方式1️⃣：Docker Compose
-
-### CLI 模式 - 处理本地文件
+以下为构建前核对及构建入口：
 
 ```bash
-# 方式A：使用 docker-compose CLI profile
-docker-compose --profile cli run analyzer-cli
-
-# 方式B：直接运行（不使用profile）
-docker-compose run --rm \
-  -v ./input.xlsx:/app/input.xlsx:ro \
-  -v ./outputs:/app/outputs \
-  -v ./logs:/app/logs \
-  -v ./.env:/app/.env:ro \
-  analyzer-cli
+docker compose --profile api config --quiet
+docker compose -f docker-compose.prod.yml config --quiet
+docker compose --profile api build analyzer-api
 ```
 
-**工作流：** `input.xlsx` 放在当前目录 → 运行命令 → 结果保存到 `outputs/`。
+`config --quiet` 只检查 Compose 配置解析；它不构建镜像，也不验证应用依赖或运行效果。
 
-> **字体扫描模式**：当 `input.xlsx` 全部为字体时，在 CLI 启动命令后追加 `--font`
-> 参数即可（详见 [FONT_SCANNING.md](FONT_SCANNING.md)）。例如：
-> `docker-compose run --rm ... analyzer-cli --font`
+## 开发 Compose 命令
 
-### API 模式 - HTTP服务
+完成构建问题处理并验证镜像后：
 
 ```bash
-docker-compose --profile api up -d          # 后台启动（默认 8000 端口）
-docker-compose logs -f analyzer-api         # 查看日志
-docker-compose --profile api down           # 停止服务
+# CLI 处理 input.xlsx，完成即退出
+docker compose --profile cli run --rm analyzer-cli
+
+# 字体 CLI
+docker compose --profile cli run --rm analyzer-cli --font
+
+# API 后台运行，映射宿主机 8000
+docker compose --profile api up -d analyzer-api
+docker compose --profile api logs -f analyzer-api
+curl --fail-with-body http://127.0.0.1:8000/health
+
+# 停止此 Compose 项目的服务
+docker compose --profile api down
 ```
 
-**使用 API：**
-```bash
-# API 文档：http://localhost:8000/docs    健康检查：curl http://localhost:8000/health
+仓库 Makefile、`docker.sh`、`docker.ps1` 使用旧式 `docker-compose` 命令；若环境只有 Compose v2，优先使用上述 `docker compose` 入口。这些脚本的测试/验证目标还可能引用已不存在的根目录测试脚本，详见[测试说明](TESTING.md)。
 
-# 上传文件并直接下载结果
-curl -X POST "http://localhost:8000/api/v1/analyze-and-download" \
-  -F "file=@input.xlsx" --output result.xlsx
+## 生产 Compose 与 Nginx
 
-# 上传文件并邮件发送
-curl -X POST "http://localhost:8000/api/v1/analyze" \
-  -F "file=@input.xlsx" -F "email=user@example.com"
-```
+生产配置使用命名卷持久化 outputs、logs、temp 和模型缓存；API 只 expose 8000，由 Nginx 映射 80/443。HTTPS server 在 `nginx.conf` 中仍为注释，映射 443 本身不会启用 HTTPS。
 
----
-
-## 方式2️⃣：原生 Docker 命令
-
-```bash
-# 构建镜像
-docker build -t github-license-analyzer:latest .
-
-# CLI 模式
-docker run --rm \
-  -v $(pwd)/input.xlsx:/app/input.xlsx:ro \
-  -v $(pwd)/outputs:/app/outputs \
-  -v $(pwd)/logs:/app/logs \
-  -v $(pwd)/.env:/app/.env:ro \
-  github-license-analyzer:latest
-
-# API 模式（后台）
-docker run -d --name analyzer-api \
-  -p 8000:8000 \
-  -v $(pwd)/outputs:/app/outputs \
-  -v $(pwd)/logs:/app/logs \
-  -v $(pwd)/.env:/app/.env:ro \
-  github-license-analyzer:latest --api --host 0.0.0.0
-```
-
----
-
-## 生产部署：Docker Compose + Nginx
+在镜像、配置、证书和网络都已核对后，入口为：
 
 ```bash
-docker-compose -f docker-compose.prod.yml up -d      # 启动
-docker-compose -f docker-compose.prod.yml logs -f    # 日志
-docker-compose -f docker-compose.prod.yml down       # 停止
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f analyzer-api
 ```
 
-**配置说明：** API 通过 Nginx 代理在 `http://localhost:80`；自动健康检查；日志/输出/临时文件持久化；支持 HTTPS。
+当前 Nginx 配置的 `client_max_body_size` 为 100M、`proxy_read_timeout` 为 60 秒，关闭了代理缓冲。长时间无响应的批量下载可能超过读取超时，需要按实际入口调整；API 流式端点语义见 [API_USAGE.md](API_USAGE.md)。
 
-### 配置 HTTPS（可选）
-1. 获取 SSL 证书放入 `ssl/`（`cert.pem`、`key.pem`）
-2. 编辑 `nginx.conf`，取消注释 HTTPS 部分
-3. 修改服务器名：`sed -i 's/your-domain.com/your.domain.com/g' nginx.conf`
-4. 重启：`docker-compose -f docker-compose.prod.yml restart nginx`
-
-### 部署到其他服务器
-```bash
-# 方式A：复制整个项目
-scp -r . user@server:/app/analyzer && docker-compose -f docker-compose.prod.yml up -d
-
-# 方式B：推送到 Docker Hub
-docker build -t yourusername/analyzer:latest . && docker push yourusername/analyzer:latest
-```
-
----
-
-## 文件说明
-
-| 文件 | 用途 |
-|------|------|
-| `Dockerfile` | 容器镜像定义 |
-| `docker-compose.yml` | 开发/测试配置 |
-| `docker-compose.prod.yml` | 生产环境配置 |
-| `nginx.conf` | Nginx 反向代理配置 |
-| `.dockerignore` | Docker 构建排除文件 |
-
----
-
-## 环境变量配置
-
-容器会自动读取宿主机 `.env` 文件中的变量；也可在命令行用 `-e KEY=VALUE` 传入：
-
-```env
-GITHUB_TOKEN=...
-GEMINI_API_KEY=...
-DASHSCOPE_API_KEY=...
-SMTP_SERVER=smtp.gmail.com
-SMTP_PORT=587
-SENDER_EMAIL=...
-SENDER_PASSWORD=...
-```
-
----
-
-## 常见操作与故障排除
-
-```bash
-docker-compose logs -f analyzer-api          # 实时日志
-docker-compose exec analyzer-api /bin/bash   # 进入容器
-docker-compose ps                            # 查看状态
-docker-compose down                          # 停止
-docker system prune -a                       # 清理资源
-```
-
-| 问题 | 排查 |
-|------|------|
-| 容器启动失败 | `docker-compose logs analyzer-api`；检查 `.env` / `input.xlsx` 是否存在 |
-| API 无法连接 | `docker-compose ps`；`docker-compose port analyzer-api 8000` |
-| 邮件发送失败 | `docker-compose exec analyzer-api env \| grep SMTP`；查日志中的 email 错误 |
+命名卷持久化不代表可以随意清理。不要将 `docker system prune -a -f` 或删除卷作为常规启动/排障步骤；它们可能影响其他项目或历史数据。
