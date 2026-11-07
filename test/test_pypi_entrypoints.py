@@ -23,6 +23,7 @@ VERSION_PAGE = f"{PAGE}{VERSION}/"
 SOURCE = "https://github.com/lucidrains/x-transformers"
 PURL = f"pkg:pypi/{PACKAGE}@{VERSION}"
 OLD_NOTICE = "Copyright (c) 2020 Phil Wang"
+DIST = f"https://files.pythonhosted.org/packages/ab/cd/hash/x_transformers-{VERSION}.tar.gz"
 
 
 def _info(version, source, license_expression="MIT"):
@@ -60,7 +61,9 @@ def _install(monkeypatch, mode):
         assert name == PACKAGE
         assert version in (None, VERSION)
         metadata_calls.append(version)
-        return deepcopy(metadata if version is None else {"info": old_info})
+        return deepcopy(metadata if version is None else {
+            "info": old_info, "urls": [{"url": DIST, "filename": DIST.rsplit('/', 1)[-1]}],
+        })
 
     async def github(client, url, version, **kwargs):
         github_calls.append((url, version, kwargs.get("name")))
@@ -106,7 +109,7 @@ def _install(monkeypatch, mode):
 def _row(route="url"):
     return {
         "name": PACKAGE, "version": VERSION,
-        "github_url": {"url": PAGE, "purl": PURL, "retry": "https://example.invalid/component"}[route],
+        "github_url": {"url": PAGE, "file": DIST, "purl": PURL, "retry": "https://example.invalid/component"}[route],
         "package_manager": "pypi", "serial_number": "00017",
     }
 
@@ -138,7 +141,7 @@ def _assert_result(result, mode, route):
         strict=True,
         reason="Pre-existing purl gate requires /blob/release-version/ and rejects the v-prefixed GitHub tag",
     ))
-    for route in ("url", "purl", "retry")
+    for route in ("url", "file", "purl", "retry")
     for mode in ("tag", "exact_tag", "default_branch", "codeberg", "github_error")
 ])
 async def test_pypi_final_evidence_survives_all_entrypoints(monkeypatch, tmp_path, entry, route, mode):
@@ -149,7 +152,7 @@ async def test_pypi_final_evidence_survives_all_entrypoints(monkeypatch, tmp_pat
                      else api._process_repositories(None, rows))
     assert len(results) == 1
     _assert_result(results[0], mode, route)
-    assert metadata_calls == [None, VERSION]
+    assert metadata_calls == ([VERSION] if route == "file" else []) + [None, VERSION]
     assert github_calls == ([] if mode == "codeberg" else [(SOURCE, VERSION, PACKAGE)])
     assert len(dispatch_calls) == (2 if route == "retry" else 1)
     output = api._generate_output(results)

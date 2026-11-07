@@ -18,7 +18,7 @@ from httpx import AsyncClient
 import aiofiles
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from core.npm_utils import is_npm_package_url, process_npm_repository
-from core.pypi_utils import process_pypi_repository
+from core.pypi_utils import process_pypi_repository, resolve_pythonhosted_reference
 from core.utils import analyze_license_content, construct_copyright_notice, find_license_files, find_readme, find_top_level_thirdparty_dirs, is_sha_version, analyze_license_content_async, construct_copyright_notice_async, find_license_files_detailed, prepare_license_text, is_purl, parse_purl, purl_to_url, is_blank_value
 from core.nuget_utils import process_nuget_packages, check_if_nuget_package_exists
 from core.llm_service import complete_sync, complete_async
@@ -1404,6 +1404,11 @@ async def process_github_repository(
     substep_logger = logging.getLogger('substep')
     url_logger = logging.getLogger('url')
     substep_logger.info(f"Starting repository processing: {github_url} (version: {version})")
+    if isinstance(github_url, str) and urlparse(github_url).hostname == 'files.pythonhosted.org':
+        reference = await resolve_pythonhosted_reference(github_url, version)
+        if reference:
+            github_url, version = reference
+            substep_logger.info(f"Confirmed PyPI distribution URL; using registry: {github_url}")
     if is_npm_package_url(github_url):
         substep_logger.info(f"Detected npm registry URL: {github_url}, calling process_npm_repository()")
         npm_result = await process_npm_repository(github_url, version)

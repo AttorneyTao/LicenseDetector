@@ -13,12 +13,46 @@ from urllib3.util.retry import Retry
 from urllib3.exceptions import InsecureRequestWarning
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote, unquote, urlparse
+from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
+from packaging.version import Version
 from .utils import extract_copyright_info, extract_copyright_info_async, is_blank_value
 from .config import LLM_CONFIG, SCORE_THRESHOLD  # 修改导入
 
 # 日志设置
 logger = logging.getLogger('main')
 llm_logger = logging.getLogger('llm_interaction')
+
+
+async def resolve_pythonhosted_reference(url: str, version: Optional[str] = None):
+    """Only convert a distribution URL confirmed by its exact PyPI release."""
+    try:
+        parsed = urlparse(url)
+        if (parsed.scheme != 'https' or parsed.netloc.lower() != 'files.pythonhosted.org'
+                or parsed.username or parsed.password):
+            return None
+        filename = unquote(parsed.path.rsplit('/', 1)[-1])
+        if filename.endswith('.whl'):
+            name, release, _, _ = parse_wheel_filename(filename)
+        else:
+            name, release = parse_sdist_filename(filename)
+        if not is_blank_value(version) and Version(str(version)) != release:
+            logger.info('PyPI distribution version conflicts with requested version; keeping original URL')
+            return None
+        metadata = await asyncio.to_thread(_fetch_pypi_metadata, str(name), version=str(release))
+        info = metadata.get('info', {})
+        if (canonicalize_name(info.get('name', '')) != canonicalize_name(name)
+                or Version(info.get('version', '')) != release):
+            return None
+        for item in metadata.get('urls', []):
+            candidate = urlparse(item.get('url', ''))
+            if (candidate.scheme == 'https' and candidate.netloc.lower() == 'files.pythonhosted.org'
+                    and unquote(candidate.path) == unquote(parsed.path)
+                    and item.get('filename') == filename):
+                return _pypi_project_page(str(name), str(release)), str(release)
+        logger.info('Distribution URL not present in exact PyPI release; keeping original URL')
+    except Exception as exc:
+        logger.info('Could not confirm PyPI distribution reference: %s', exc)
+    return None
 
 def _parse_package_name(url: str) -> str:
     """从 PyPI URL 中提取包名"""
