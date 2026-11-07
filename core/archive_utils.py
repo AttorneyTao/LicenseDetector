@@ -11,6 +11,7 @@
 # 分析结束后无论成功失败都会删除下载与解压产生的临时文件。
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # 支持的归档后缀（按长度倒序匹配，保证 .tar.gz 先于 .gz 之类的误判）
 ARCHIVE_SUFFIXES = (
+    ".conda",
     ".tar.gz", ".tar.xz", ".tar.bz2",
     ".tgz", ".txz", ".tbz2",
     ".zip", ".tar",
@@ -256,6 +258,26 @@ def _safe_extract_zip(archive_path: str, dest_dir: str) -> None:
                 logger.warning(f"跳过可疑的归档成员（路径穿越）: {info.filename}")
 
 
+def _extract_conda_info(archive_path: str, dest_dir: str) -> None:
+    """Read the .conda metadata archive; package payload is unnecessary for this audit."""
+    import zstandard
+    with zipfile.ZipFile(archive_path) as container:
+        entries=[entry for entry in container.infolist()
+                 if '/' not in entry.filename and entry.filename.startswith('info-') and entry.filename.endswith('.tar.zst')]
+        if len(entries)!=1:
+            raise ValueError('Conda container must have one info archive')
+        with tempfile.TemporaryDirectory(prefix='conda_info_',dir=dest_dir) as temporary:
+            target=os.path.join(temporary,'info.tar')
+            size=0
+            with container.open(entries[0]) as compressed,zstandard.ZstdDecompressor().stream_reader(compressed) as reader,open(target,'wb') as output:
+                while chunk:=reader.read(65536):
+                    size+=len(chunk)
+                    if size>64*1024*1024:
+                        raise ValueError('Conda info archive exceeds size limit')
+                    output.write(chunk)
+            _safe_extract_tar(target,dest_dir)
+
+
 def extract_archive(archive_path: str, dest_dir: str) -> str:
     """
     解压归档到 dest_dir，返回用于分析的根目录。
@@ -263,7 +285,9 @@ def extract_archive(archive_path: str, dest_dir: str) -> str:
     """
     os.makedirs(dest_dir, exist_ok=True)
     lower = archive_path.lower()
-    if lower.endswith(".zip"):
+    if lower.endswith(".conda"):
+        _extract_conda_info(archive_path,dest_dir)
+    elif lower.endswith(".zip"):
         _safe_extract_zip(archive_path, dest_dir)
     else:
         _safe_extract_tar(archive_path, dest_dir)
@@ -547,6 +571,8 @@ async def process_direct_archive_url(
     name: Optional[str] = None,
     font_mode: bool = False,
     log_queue=None,
+    directory_analyzer=None,
+    expected_sha256: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     直接下载链接兜底分析总入口：下载 -> 解压 -> 本地分析 -> 清理临时文件。
@@ -571,6 +597,11 @@ async def process_direct_archive_url(
     try:
         archive_path = os.path.join(tmp_dir, _archive_filename(url))
         await download_archive_with_progress(url, archive_path, log_queue=log_queue)
+        if expected_sha256:
+            with open(archive_path,'rb') as source:
+                actual_sha256=hashlib.file_digest(source,'sha256').hexdigest()
+            if actual_sha256.lower()!=expected_sha256.lower():
+                raise ValueError('Downloaded archive SHA-256 differs from registry metadata')
 
         extract_dir = os.path.join(tmp_dir, "extracted")
         loop = asyncio.get_running_loop()
@@ -578,7 +609,8 @@ async def process_direct_archive_url(
         analysis_root = await loop.run_in_executor(None, extract_archive, archive_path, extract_dir)
         logger.info(f"[ARCHIVE] 解压完成，分析根目录: {analysis_root}")
 
-        result = await analyze_extracted_directory(
+        analyzer = directory_analyzer or analyze_extracted_directory
+        result = await analyzer(
             analysis_root,
             source_url=url,
             component_name=component_name,

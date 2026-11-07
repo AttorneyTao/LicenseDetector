@@ -48,6 +48,7 @@ from core.crate_utils import parse_crates_io_reference, process_crate_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 from core.r_utils import parse_r_reference, process_r_package
+from core.conda_utils import is_conda_package_url, process_conda_package
 from core.deb_utils import is_deb_package_url, process_deb_package
 from core.maven_utils import (
     analyze_maven_repository_url,
@@ -223,8 +224,11 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         or url.startswith("https://pub.dartlang.org/packages/")
                     )
 
+                    is_conda_pkg = is_conda_package_url(url)
                     r_reference = parse_r_reference(url, row.get("package_manager"), name)
-                    if r_reference is not None:
+                    if is_conda_pkg:
+                        result = await process_conda_package(url, version, name)
+                    elif r_reference is not None:
                         result = await process_r_package(url, version, name, row.get("package_manager"))
 
                     elif is_pubdev_pkg:
@@ -331,7 +335,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
                     r_archive_url = result.pop("_r_archive_fallback_url", None)
                     archive_url = url if is_direct_archive_url(url) else r_archive_url
-                    if is_direct_archive_url(archive_url) and (
+                    if not is_conda_pkg and is_direct_archive_url(archive_url) and (
                         result.get("status") != "success" or not result.get("license_type")
                     ):
                         logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
@@ -353,7 +357,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     fallback_url, fallback_version, fallback_name = resolve_input_ref(
                         row.get("github_url"), row.get("version"), name
                     )
-                    if is_direct_archive_url(fallback_url):
+                    if not is_conda_package_url(fallback_url) and is_direct_archive_url(fallback_url):
                         try:
                             fallback_result = await process_direct_archive_url(
                                 fallback_url, fallback_version, fallback_name

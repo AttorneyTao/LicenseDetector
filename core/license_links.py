@@ -21,7 +21,7 @@ logger = logging.getLogger('main')
 LOOKUP_TIMEOUT = 30
 MAX_PAGE_BYTES = 1_000_000
 EVIDENCE_KEY = '_archive_license_link_evidence'
-PACKAGE_SUFFIXES = ('.tar.gz', '.tar.xz', '.tar.bz2', '.tar.zst', '.tgz',
+PACKAGE_SUFFIXES = ('.tar.gz', '.tar.xz', '.tar.bz2', '.tar.zst', '.conda', '.tgz',
                     '.tbz2', '.txz', '.zip', '.tar', '.crate', '.whl', '.egg',
                     '.nupkg', '.jar', '.aar', '.deb', '.rpm', '.7z', '.gz', '.xz')
 
@@ -66,6 +66,7 @@ def _known_evidence_url(url):
     return any(parsed.hostname == host and path.startswith(prefix) for host, prefix in (
         ('crates.io', '/crates/'), ('www.npmjs.com', '/package/'),
         ('pypi.org', '/project/'), ('pub.dev', '/packages/'),
+        ('api.anaconda.org', '/release/'),
         ('www.nuget.org', '/packages/'), ('pkg.go.dev', '/'),
         ('mvnrepository.com', '/artifact/'), ('central.sonatype.com', '/artifact/'),
         ('sources.debian.org', '/src/'), ('launchpad.net', '/ubuntu/+source/'),
