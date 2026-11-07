@@ -40,6 +40,7 @@ from core.maven_utils import (
     is_maven_repository_url,
 )
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
+from core.r_utils import parse_r_reference, process_r_package
 from core.deb_utils import is_deb_package_url, process_deb_package
 
 import pandas as pd
@@ -1025,8 +1026,12 @@ async def _process_repositories(api, df, log_queue=None):
                     original_url, row.get("version"), row.get("name", None)
                 )
                 
-                # Check if it's a pub.dev (Dart/Flutter) package
-                if isinstance(url, str) and (
+                # R registry pages precede generic repository discovery.
+                r_reference = parse_r_reference(url, row.get("package_manager"), name)
+                if r_reference is not None:
+                    result = await process_r_package(url, version, name, row.get("package_manager"))
+
+                elif isinstance(url, str) and (
                     url.startswith("https://pub.dev/packages/") or
                     url.startswith("https://pub.dartlang.org/packages/")
                 ):
@@ -1145,7 +1150,9 @@ async def _process_repositories(api, df, log_queue=None):
 
                 # 归档下载兜底：所有路径都未获取到 license 信息，且 URL 是
                 # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
-                if is_direct_archive_url(url) and (
+                r_archive_url = result.pop("_r_archive_fallback_url", None)
+                archive_url = url if is_direct_archive_url(url) else r_archive_url
+                if is_direct_archive_url(archive_url) and (
                     result.get("status") != "success" or not result.get("license_type")
                 ):
                     logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
@@ -1154,7 +1161,9 @@ async def _process_repositories(api, df, log_queue=None):
                             log_queue.put_nowait(f"[INFO] 现有流程未获取到 license，尝试归档下载兜底分析: {url}")
                         except:
                             pass
-                    archive_result = await process_direct_archive_url(url, version, name, log_queue=log_queue)
+                    archive_result = await process_direct_archive_url(
+                        archive_url, version, r_reference.name if r_reference else name, log_queue=log_queue
+                    )
                     if archive_result:
                         link_context = result
                         result = archive_result

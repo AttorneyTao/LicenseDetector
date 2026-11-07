@@ -47,6 +47,7 @@ from core.npm_utils import is_npm_package_url, process_npm_repository
 from core.crate_utils import parse_crates_io_reference, process_crate_repository
 from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
+from core.r_utils import parse_r_reference, process_r_package
 from core.deb_utils import is_deb_package_url, process_deb_package
 from core.maven_utils import (
     analyze_maven_repository_url,
@@ -222,7 +223,11 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         or url.startswith("https://pub.dartlang.org/packages/")
                     )
 
-                    if is_pubdev_pkg:
+                    r_reference = parse_r_reference(url, row.get("package_manager"), name)
+                    if r_reference is not None:
+                        result = await process_r_package(url, version, name, row.get("package_manager"))
+
+                    elif is_pubdev_pkg:
                         # 与 api.py 保持一致：先尝试 pubspec 里的 GitHub 仓库，
                         # 未找到匹配版本时回退至 pub.dev 压缩包分析
                         logger.info(f"检测到 pub.dev 包 URL: {url}")
@@ -324,11 +329,15 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                             )
                     # 归档下载兜底：所有路径都未获取到 license 信息，且 URL 是
                     # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
-                    if is_direct_archive_url(url) and (
+                    r_archive_url = result.pop("_r_archive_fallback_url", None)
+                    archive_url = url if is_direct_archive_url(url) else r_archive_url
+                    if is_direct_archive_url(archive_url) and (
                         result.get("status") != "success" or not result.get("license_type")
                     ):
                         logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
-                        archive_result = await process_direct_archive_url(url, version, name)
+                        archive_result = await process_direct_archive_url(
+                            archive_url, version, r_reference.name if r_reference else name
+                        )
                         if archive_result:
                             link_context = result
                             result = archive_result
