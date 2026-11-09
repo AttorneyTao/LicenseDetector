@@ -23,6 +23,7 @@ LLM_CACHE_MODE=read_write
 | `USE_LLM` | `true`；部分调用点据此跳过模型分析/版本匹配 |
 | `HTTP_PROXY`、`HTTPS_PROXY` | 网络客户端使用的代理；各客户端行为以实现为准 |
 | `MAVEN_REPOSITORY_BASE_URLS` | 逗号分隔的额外 Maven 仓库根地址 |
+| `HF_TOKEN` | 可选，仅用于 Hugging Face 受限元数据/许可文本，不向外部许可主机转发 |
 | `ARCHIVE_MAX_SIZE_BYTES` | `1073741824`，归档下载最大字节数 |
 | `ARCHIVE_DOWNLOAD_TIMEOUT` | `900`，归档总下载超时，单位秒 |
 

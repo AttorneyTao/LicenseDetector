@@ -14,6 +14,7 @@
 | 开发、回归测试和真实联网验证 | [TESTING.md](TESTING.md) |
 | 了解 crates.io 特有输入及版本规则 | [CRATE_IO_INTEGRATION.md](CRATE_IO_INTEGRATION.md) |
 | 使用字体 CLI 和站点适配器 | [FONT_SCANNING.md](FONT_SCANNING.md) |
+| 审核 HF 模型/数据集并限制权重下载 | [HUGGINGFACE.md](HUGGINGFACE.md) |
 | 查看近期功能变更 | [CHANGES.md](CHANGES.md) |
 
 这些文档描述当前已提交实现，不包含工作区中尚未提交的补丁或外部运维脚本的完整实现。命令均从仓库根目录运行；模型及网络测试可能产生请求和费用，执行范围见测试说明。

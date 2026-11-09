@@ -49,6 +49,7 @@ from core.pubdev_utils import get_github_url_from_pubdev, process_pubdev_package
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 from core.r_utils import parse_r_reference, process_r_package
 from core.conda_utils import is_conda_package_url, process_conda_package
+from core.huggingface_utils import is_huggingface_url, process_huggingface_repository
 from core.deb_utils import is_deb_package_url, process_deb_package
 from core.maven_utils import (
     analyze_maven_repository_url,
@@ -193,6 +194,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
             nonlocal last_save_time, running_tasks
             async with sem if allow_purl_fallback else nullcontext():
                 name = None  # 保证异常时也能访问 name
+                is_hf_pkg = is_huggingface_url(row.get("github_url"))
                 link_context = None
                 try:
                     if allow_purl_fallback:
@@ -204,6 +206,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     url, version, name = resolve_input_ref(
                         original_url, row.get("version"), row.get("name", None)
                     )
+                    is_hf_pkg = is_huggingface_url(url)
 
                     # 新增：判断是否为 Go 包
                     is_go_pkg = False
@@ -226,7 +229,9 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
 
                     is_conda_pkg = is_conda_package_url(url)
                     r_reference = parse_r_reference(url, row.get("package_manager"), name)
-                    if is_conda_pkg:
+                    if is_hf_pkg:
+                        result = await process_huggingface_repository(url, version, name)
+                    elif is_conda_pkg:
                         result = await process_conda_package(url, version, name)
                     elif r_reference is not None:
                         result = await process_r_package(url, version, name, row.get("package_manager"))
@@ -335,7 +340,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
                     r_archive_url = result.pop("_r_archive_fallback_url", None)
                     archive_url = url if is_direct_archive_url(url) else r_archive_url
-                    if not is_conda_pkg and is_direct_archive_url(archive_url) and (
+                    if not is_hf_pkg and not is_conda_pkg and is_direct_archive_url(archive_url) and (
                         result.get("status") != "success" or not result.get("license_type")
                     ):
                         logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
@@ -357,7 +362,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                     fallback_url, fallback_version, fallback_name = resolve_input_ref(
                         row.get("github_url"), row.get("version"), name
                     )
-                    if not is_conda_package_url(fallback_url) and is_direct_archive_url(fallback_url):
+                    if not is_huggingface_url(fallback_url) and not is_conda_package_url(fallback_url) and is_direct_archive_url(fallback_url):
                         try:
                             fallback_result = await process_direct_archive_url(
                                 fallback_url, fallback_version, fallback_name
@@ -377,7 +382,7 @@ async def process_all_repos(api, df, max_concurrency=MAX_CONCURRENCY):
                         }
                 finally:
                     if index in results:
-                        if allow_purl_fallback:
+                        if allow_purl_fallback and not is_hf_pkg:
                             async def retry(purl):
                                 retry_row = row.copy()
                                 retry_row["github_url"] = purl

@@ -68,6 +68,7 @@ CLI 将结果保存为 `outputs/output_YYYY-MM-DD_HH-MM-SS.xlsx` 和 `outputs/ou
 | Debian/Ubuntu | sources.debian.org、Launchpad、deb purl |
 | R | CRAN、Bioconductor 包页面及对应源码包 |
 | Conda | anaconda.org、api.anaconda.org、conda.anaconda.org 的包/版本/构建链接 |
+| Hugging Face | 模型及 datasets 仓库、tree/blob/resolve 链接；只读取元数据与许可文本，不下载权重 |
 | 直接发布包 | 支持后缀的归档下载链接，当前置流程未取得许可时读取包内文件 |
 | 字体 | GitHub、Google Fonts、Fontshare、猫啃网及其他可抓取来源，使用 `--font` |
 
@@ -101,6 +102,7 @@ CLI 将结果保存为 `outputs/output_YYYY-MM-DD_HH-MM-SS.xlsx` 和 `outputs/ou
 | [测试与开发](docs/TESTING.md) | 代码结构、离线回归、真实联网验证边界 |
 | [crates.io](docs/CRATE_IO_INTEGRATION.md) | 下载链接归一与标准 crate 流程 |
 | [字体模式](docs/FONT_SCANNING.md) | 字体站点适配、CLI 范围和联网抽样 |
+| [Hugging Face](docs/HUGGINGFACE.md) | 模型/数据集、版本固定及禁止权重下载 |
 | [变更记录](docs/CHANGES.md) | 有代码/提交依据的近期变更 |
 
 本项目采用 [Apache License 2.0](LICENSE)。

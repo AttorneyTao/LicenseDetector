@@ -42,6 +42,7 @@ from core.maven_utils import (
 from core.archive_utils import is_direct_archive_url, process_direct_archive_url
 from core.r_utils import parse_r_reference, process_r_package
 from core.conda_utils import is_conda_package_url, process_conda_package
+from core.huggingface_utils import is_huggingface_url, process_huggingface_repository
 from core.deb_utils import is_deb_package_url, process_deb_package
 
 import pandas as pd
@@ -1019,6 +1020,7 @@ async def _process_repositories(api, df, log_queue=None):
         nonlocal completed_count
         async with sem if allow_purl_fallback else nullcontext():
             name = None
+            is_hf_pkg = is_huggingface_url(row.get("github_url"))
             link_context = None
             try:
                 original_url = row.get("github_url")
@@ -1026,11 +1028,14 @@ async def _process_repositories(api, df, log_queue=None):
                 url, version, name = resolve_input_ref(
                     original_url, row.get("version"), row.get("name", None)
                 )
+                is_hf_pkg = is_huggingface_url(url)
                 
                 # R registry pages precede generic repository discovery.
                 is_conda_pkg = is_conda_package_url(url)
                 r_reference = parse_r_reference(url, row.get("package_manager"), name)
-                if is_conda_pkg:
+                if is_hf_pkg:
+                    result = await process_huggingface_repository(url, version, name)
+                elif is_conda_pkg:
                     result = await process_conda_package(url, version, name)
                 elif r_reference is not None:
                     result = await process_r_package(url, version, name, row.get("package_manager"))
@@ -1156,7 +1161,7 @@ async def _process_repositories(api, df, log_queue=None):
                 # 源码包直接下载链接时，下载解压后复用 GitHub 分析流程本地分析
                 r_archive_url = result.pop("_r_archive_fallback_url", None)
                 archive_url = url if is_direct_archive_url(url) else r_archive_url
-                if not is_conda_pkg and is_direct_archive_url(archive_url) and (
+                if not is_hf_pkg and not is_conda_pkg and is_direct_archive_url(archive_url) and (
                     result.get("status") != "success" or not result.get("license_type")
                 ):
                     logger.info(f"现有流程未获取到 license，尝试归档下载兜底分析: {url}")
@@ -1188,7 +1193,7 @@ async def _process_repositories(api, df, log_queue=None):
                 fallback_url, fallback_version, fallback_name = resolve_input_ref(
                     row.get("github_url"), row.get("version"), name
                 )
-                if not is_conda_package_url(fallback_url) and is_direct_archive_url(fallback_url):
+                if not is_huggingface_url(fallback_url) and not is_conda_package_url(fallback_url) and is_direct_archive_url(fallback_url):
                     try:
                         fallback_result = await process_direct_archive_url(
                             fallback_url, fallback_version, fallback_name, log_queue=log_queue
@@ -1208,7 +1213,7 @@ async def _process_repositories(api, df, log_queue=None):
                     }
             finally:
                 if index in results:
-                    if allow_purl_fallback:
+                    if allow_purl_fallback and not is_hf_pkg:
                         async def retry(purl):
                             retry_row = row.copy()
                             retry_row["github_url"] = purl

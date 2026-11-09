@@ -5,13 +5,15 @@
 ## 总体顺序
 
 1. 读取原输入，解析 purl 并回填其名称和版本，保留原 `input_url`。
-2. 按来源分发到 Conda、R、pub、Go、npm、crate、deb、Maven 或通用仓库处理。PyPI 及 pythonhosted 在共享仓库入口识别并转交 PyPI 处理器。
+2. 按来源分发到 Hugging Face、Conda、R、pub、Go、npm、crate、deb、Maven 或通用仓库处理。PyPI 及 pythonhosted 在共享仓库入口识别并转交 PyPI 处理器。
 3. 当前置结果未成功或没有主许可，且输入/处理器提供了受支持归档地址时，尝试共享归档审核。Conda 的归档选择由 Conda 处理器控制，外层不再通用下载兜底。
 4. 满足触发条件时，利用输入的包管理器、名称和版本，最后进行一次 purl 重试。
 5. 所有许可分析结束后，执行许可证据链接优化；只更新 `license_files`。
 6. 生成最终表达式、分号展示、风险和版权兜底列，输出 Excel。
 
 各路径有不同失败语义，不能将上述流程理解为每一行都会依次运行所有生态。字体使用单独的 CLI 分发器，见[字体模式](FONT_SCANNING.md)。
+
+Hugging Face 是独立处理路径：只读取固定 commit 的元数据和文本证据，不下载权重；无论成功或失败均不进入通用归档、purl 或其他生态回退，也不调用通用最终链接优化。细节见 [HUGGINGFACE.md](HUGGINGFACE.md)。
 
 ## 各生态的证据与版本
 

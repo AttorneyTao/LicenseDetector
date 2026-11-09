@@ -27,6 +27,7 @@ CLI 与 API 的分发及输出组装存在平行实现。修改其中一处后�
 
 ```bash
 uv run python -m pytest -q \
+  test/test_huggingface_utils.py \
   test/test_pythonhosted_reference.py \
   test/test_pypi_entrypoints.py \
   test/test_pypi_evidence_boundaries.py \
